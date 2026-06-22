@@ -818,9 +818,11 @@ with _tab_pipeline:
         else:
             selected_models = [m for m in PRODUCTION_MODELS if m in selected_raw]
 
+        from src.config import PIPELINE_CONFIG
         st.caption(
             f"Training: **{', '.join(selected_models)}**  ·  "
-            f"CV folds: **5**  ·  n_iter: **20**  ·  Tuning: **ROC-AUC**"
+            f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  "
+            f"n_iter: **{PIPELINE_CONFIG['n_iter']}**  ·  Tuning: **ROC-AUC**"
         )
 
         with st.expander("ℹ️ When to use each model", expanded=False):
