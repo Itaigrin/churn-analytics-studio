@@ -23,6 +23,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import time
+import threading
 import traceback
 
 import numpy as np
@@ -136,8 +137,7 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             _render(_current_pct[0], _current_msg[0])
             _stop_timer.wait(1)
 
-    import threading as _threading
-    _timer_thread = _threading.Thread(target=_timer_tick, daemon=True)
+    _timer_thread = threading.Thread(target=_timer_tick, daemon=True)
     _timer_thread.start()
 
     def upd(pct: int, msg: str):
