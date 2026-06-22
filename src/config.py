@@ -35,9 +35,12 @@ PRODUCTION_MODELS = [
 ]
 
 # ── Fixed pipeline config (replaces execution modes) ─────────────────────────
+import os as _os
+_ON_CLOUD = _os.path.exists("/mount/src")
+
 PIPELINE_CONFIG = {
-    "cv_folds":      5,
-    "n_iter":        20,
+    "cv_folds":      3 if _ON_CLOUD else 5,
+    "n_iter":        10 if _ON_CLOUD else 20,
     "optuna_trials": 0,
 }
 
