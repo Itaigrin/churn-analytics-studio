@@ -101,26 +101,17 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
     from src.evaluator import evaluate_all, pick_best_model
     from src.utils import ensure_optional_libraries
 
-    prog_container = st.empty()
-    t_start  = time.time()
+    prog_container    = st.empty()
+    elapsed_container = st.empty()
+    t_start           = time.time()
 
-    def upd(pct: int, msg: str):
-        elapsed = time.time() - t_start
+    _current_pct = [0]
+    _current_msg = ["Starting…"]
+    _stop_timer  = threading.Event()
 
-        # ETA - only show once we have enough data (pct > 5 and elapsed > 2s)
-        if pct >= 5 and elapsed > 2 and pct < 100:
-            eta_sec = elapsed * (100 - pct) / pct
-            if eta_sec >= 60:
-                eta_str = f"~{int(eta_sec // 60)}m {int(eta_sec % 60)}s remaining"
-            else:
-                eta_str = f"~{int(eta_sec)}s remaining"
-        elif pct >= 100:
-            eta_str = "Done ✅"
-        else:
-            eta_str = "Estimating…"
-
+    def _render(pct, msg):
+        elapsed     = time.time() - t_start
         elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s" if elapsed >= 60 else f"{elapsed:.0f}s"
-
         prog_container.markdown(
             f"""
 <div style="background:#1e2130;border:1px solid #3a3f5c;border-radius:10px;padding:16px 20px;margin-bottom:8px">
@@ -132,14 +123,27 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
     <div style="background:linear-gradient(90deg,#4299e1,#63b3ed);width:{pct}%;height:100%;border-radius:6px;transition:width 0.3s ease"></div>
   </div>
   <div style="margin-top:10px;color:#e2e8f0;font-size:13px">⏳ {msg}</div>
-  <div style="margin-top:6px;display:flex;gap:20px">
+  <div style="margin-top:6px">
     <span style="color:#718096;font-size:12px">Elapsed: {elapsed_str}</span>
-    <span style="color:#68d391;font-size:12px;font-weight:600">{eta_str}</span>
   </div>
 </div>
 """,
             unsafe_allow_html=True,
         )
+
+    def _timer_tick():
+        while not _stop_timer.is_set():
+            _render(_current_pct[0], _current_msg[0])
+            _stop_timer.wait(1)
+
+    import threading as _threading
+    _timer_thread = _threading.Thread(target=_timer_tick, daemon=True)
+    _timer_thread.start()
+
+    def upd(pct: int, msg: str):
+        _current_pct[0] = pct
+        _current_msg[0] = msg
+        _render(pct, msg)
 
     try:
         upd(2, "Checking optional libraries (XGBoost, LightGBM, CatBoost, SHAP, Optuna)…")
@@ -158,12 +162,12 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
 
         if target_col_std not in df_clean.columns:
             st.error(f"Target column '{target_col}' not found. Available: {list(df_clean.columns)[:10]}")
-            prog_container.empty(); return
+            _stop_timer.set(); prog_container.empty(); return
 
         try:
             y = convert_target(df_clean[target_col_std])
         except Exception as e:
-            st.error(f"Target column error: {e}"); prog_container.empty(); return
+            st.error(f"Target column error: {e}"); _stop_timer.set(); prog_container.empty(); return
 
         ids = (df_clean[id_col_std].copy()
                if id_col_std and id_col_std in df_clean.columns
@@ -264,11 +268,13 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         ))
 
         upd(100, f"✅ Done in {total_runtime:.0f}s")
+        _stop_timer.set()
         time.sleep(0.8)
         prog_container.empty()
         st.rerun()
 
     except Exception as exc:
+        _stop_timer.set()
         prog_container.empty()
         st.error(f"Pipeline error: {exc}")
         with st.expander("Full traceback"):
