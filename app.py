@@ -95,6 +95,50 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
     st.divider()
 
 
+def _estimate_runtime(df: pd.DataFrame, selected_models: list) -> tuple[str, str]:
+    """Estimate pipeline runtime based on data size and selected models."""
+    import os as _os
+    _on_cloud = _os.path.exists("/mount/src")
+
+    from src.config import PIPELINE_CONFIG
+    n_iter    = PIPELINE_CONFIG["n_iter"]
+    cv_folds  = PIPELINE_CONFIG["cv_folds"]
+
+    n_rows = len(df)
+    n_cols = df.shape[1]
+
+    # Base seconds per (fold × iter) at 5,000 rows / 15 cols
+    _model_base = {
+        "Logistic Regression": 0.3,
+        "Random Forest":       1.8,
+        "XGBoost":             1.4,
+        "LightGBM":            1.0,
+        "CatBoost":            3.0,
+    }
+
+    # Scale by dataset size (linear on rows, sqrt on cols)
+    size_scale = (n_rows / 5_000) * ((n_cols / 15) ** 0.5)
+    size_scale = max(size_scale, 0.1)
+
+    total_base = sum(_model_base.get(m, 1.5) for m in selected_models)
+    est_sec    = total_base * n_iter * cv_folds * size_scale
+
+    if _on_cloud:
+        est_sec *= 2.5
+
+    lo = est_sec * 0.6
+    hi = est_sec * 1.8
+
+    def _fmt(s: float) -> str:
+        if s < 60:
+            return f"{max(1, int(s))}s"
+        m = int(s // 60)
+        s2 = int(s % 60)
+        return f"{m}m {s2}s" if s2 else f"{m}m"
+
+    return _fmt(lo), _fmt(hi)
+
+
 def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: list):
     """Executes Steps 3–10 and stores results in st.session_state."""
     from sklearn.model_selection import train_test_split
@@ -844,6 +888,8 @@ with _tab_pipeline:
             )
     with btn_col:
         run = st.button("🚀 Run Pipeline", type="primary", use_container_width=True)
+        _eta_low, _eta_high = _estimate_runtime(df, selected_models)
+        st.caption(f"⏱️ Est. runtime: **{_eta_low} - {_eta_high}**")
 
     if run:
         for _k in ["results", "best_model_name", "training_done", "predictions",
