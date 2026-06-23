@@ -8,7 +8,7 @@ Streamlit application implementing a full ML pipeline:
   Step 3   Data Cleaning (inside sklearn Pipelines - zero data leakage)
   Step 4   Lightweight Feature Engineering
   Step 6   Train / Test Split (stratified 80/20, random_state=42)
-  Step 7   Preprocessing (ColumnTransformer, conditional scaling per model)
+  Step 7   Preprocessing (ColumnTransformer, conditiohnal scaling per model)
   Step 8   Model Training (Fast / Balanced / Best Accuracy modes)
   Step 9   Hyperparameter Optimisation (RandomizedSearchCV / Optuna)
   Step 10  Evaluation (6 metrics, correct best-model selection for imbalanced data)
@@ -66,7 +66,8 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
     """Displays the Predictive Signal Assessment results."""
     from src.signal_assessor import assess_predictive_signal
 
-    cache_key = f"signal_{len(df)}_{target_col}_{id_col}"
+    _data_hash = hash(df.to_csv(index=False)[:5000])
+        cache_key  = f"signal_{len(df)}_{target_col}_{id_col}_{_data_hash}"
     if st.session_state.get("_signal_cache_key") != cache_key:
         with st.spinner("Analysing predictive signal…"):
             result = assess_predictive_signal(df, target_col, id_col)
