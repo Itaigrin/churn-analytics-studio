@@ -212,6 +212,50 @@ def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5,
     }
 
 
+# ── Overfitting report ────────────────────────────────────────────────────────
+
+def build_overfitting_report(results: dict) -> pd.DataFrame:
+    """
+    Build the per-model overfitting report table.
+
+    Columns:
+      Model | Train ROC-AUC | Val ROC-AUC (CV) | Test ROC-AUC | Gap (Train-Test) | Status
+
+    Sources of each value:
+      train_roc_auc       — scored on X_train after final fit (evaluate_model)
+      optuna_val_roc_auc  — mean CV score from best Optuna trial (trainer)
+      roc_auc             — scored on held-out X_test (evaluate_model)
+    """
+    rows = []
+    for name, r in results.items():
+        if r.get("error") or r.get("model") is None:
+            continue
+        train = r.get("train_roc_auc", float("nan"))
+        val   = r.get("optuna_val_roc_auc", float("nan"))
+        test  = r.get("roc_auc", float("nan"))
+        gap   = train - test if not (np.isnan(train) or np.isnan(test)) else float("nan")
+
+        if np.isnan(gap):
+            status = "—"
+        elif gap < 0.02:
+            status = "🟢 Excellent"
+        elif gap < 0.05:
+            status = "🟡 Moderate"
+        else:
+            status = "🔴 Overfitting"
+
+        rows.append({
+            "Model":              name,
+            "Train ROC-AUC":      f"{train:.4f}" if not np.isnan(train) else "—",
+            "Val ROC-AUC (CV)":   f"{val:.4f}"   if not np.isnan(val)   else "—",
+            "Test ROC-AUC":       f"{test:.4f}"   if not np.isnan(test)  else "—",
+            "Gap (Train − Test)": f"{gap:+.4f}"   if not np.isnan(gap)   else "—",
+            "Generalization":     status,
+        })
+
+    return pd.DataFrame(rows)
+
+
 # ── Comparison table ──────────────────────────────────────────────────────────
 
 def build_comparison_table(results: dict) -> pd.DataFrame:

@@ -102,27 +102,32 @@ def _estimate_runtime(df: pd.DataFrame, selected_models: list) -> tuple[str, str
     _on_cloud = _os.path.exists("/mount/src")
 
     from src.config import PIPELINE_CONFIG
-    n_iter    = PIPELINE_CONFIG["n_iter"]
+    n_trials  = max(PIPELINE_CONFIG.get("optuna_trials", 30), 1)
     cv_folds  = PIPELINE_CONFIG["cv_folds"]
+    n_rows    = len(df)
 
-    n_rows = len(df)
+    # Effective trials after dataset-size scaling in trainer.py
+    if n_rows > 100_000:
+        n_trials = max(10, n_trials // 3)
+    elif n_rows > 50_000:
+        n_trials = max(15, n_trials // 2)
+
     n_cols = df.shape[1]
 
-    # Base seconds per (fold × iter) at 5,000 rows / 15 cols
+    # Base seconds per (fold × trial) at 5,000 rows / 15 cols
     _model_base = {
-        "Logistic Regression": 0.3,
-        "Random Forest":       1.8,
-        "XGBoost":             1.4,
-        "LightGBM":            1.0,
-        "CatBoost":            3.0,
+        "Logistic Regression": 0.06,
+        "Random Forest":       0.35,
+        "XGBoost":             0.20,
+        "LightGBM":            0.15,
+        "CatBoost":            0.45,
     }
 
-    # Scale by dataset size (linear on rows, sqrt on cols)
     size_scale = (n_rows / 5_000) * ((n_cols / 15) ** 0.5)
     size_scale = max(size_scale, 0.1)
 
-    total_base = sum(_model_base.get(m, 1.5) for m in selected_models)
-    est_sec    = total_base * n_iter * cv_folds * size_scale
+    total_base = sum(_model_base.get(m, 0.25) for m in selected_models)
+    est_sec    = total_base * n_trials * cv_folds * size_scale
 
     if _on_cloud:
         est_sec *= 2.5
@@ -379,13 +384,15 @@ def _show_results():
     k5.metric("ROC-AUC",              f"{roc:.4f}",
               help=f"Measures the model's overall ability to distinguish between customers who will churn and those who will stay. A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds.{cv_label}")
 
-    # Overfitting check
+    # Quick overfitting alert (uses test ROC-AUC, not CV)
     train_roc = best.get("train_roc_auc", 0)
-    gap = train_roc - roc
+    test_roc  = best.get("roc_auc", 0)
+    gap = train_roc - test_roc
     if gap > 0.10:
         st.warning(
-            f"⚠️ Possible overfitting: Train ROC-AUC={train_roc:.4f} → "
-            f"Test ROC-AUC={roc:.4f} (gap={gap:.4f}). Try more regularisation."
+            f"⚠️ Possible overfitting detected for **{best_name}**: "
+            f"Train ROC-AUC = {train_roc:.4f} → Test ROC-AUC = {test_roc:.4f} "
+            f"(gap = {gap:.4f}). See the Overfitting Report below."
         )
 
     st.markdown("#### Model Comparison  *(sorted by Best Overall Score)*")
@@ -414,6 +421,18 @@ def _show_results():
         },
     )
 
+    # ── Overfitting Report ────────────────────────────────────────────────────
+    _sec("🔬", "Overfitting Report")
+    st.caption(
+        "Train ROC-AUC is measured on the training set (data the model memorised). "
+        "Val ROC-AUC is the average of 5 hold-out folds from Optuna tuning (unseen data). "
+        "Test ROC-AUC is scored on the final held-out test set. "
+        "Gap = Train − Test  ·  🟢 < 0.02  ·  🟡 0.02–0.05  ·  🔴 > 0.05"
+    )
+    from src.evaluator import build_overfitting_report
+    of_df = build_overfitting_report(results)
+    if not of_df.empty:
+        st.dataframe(of_df, use_container_width=True, hide_index=True)
     st.divider()
 
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
@@ -899,8 +918,8 @@ with _tab_pipeline:
         from src.config import PIPELINE_CONFIG
         st.caption(
             f"Training: **{', '.join(selected_models)}**  ·  "
-            f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  "
-            f"n_iter: **{PIPELINE_CONFIG['n_iter']}**  ·  Tuning: **ROC-AUC**"
+            f"Optuna trials: **{PIPELINE_CONFIG['optuna_trials']}**  ·  "
+            f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
 
         with st.expander("ℹ️ When to use each model", expanded=False):
