@@ -24,11 +24,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 
-import os as _os
 from .config import RANDOM_STATE
-
-_ON_CLOUD = _os.path.exists("/mount/src")
-_N_JOBS   = 1 if _ON_CLOUD else -1
 
 
 # ── Optional library imports ──────────────────────────────────────────────────
@@ -85,7 +81,7 @@ def get_registry(n_samples: int, is_imbalanced: bool,
             "needs_scale": True,
             "clf": lambda: LogisticRegression(
                 max_iter=1000, random_state=RANDOM_STATE,
-                class_weight=cw, solver="lbfgs", n_jobs=_N_JOBS,
+                class_weight=cw, solver="lbfgs", n_jobs=-1,
             ),
             "param_dist": {
                 "clf__C":       [0.001, 0.01, 0.1, 0.5, 1.0, 5.0, 10.0],
@@ -108,7 +104,7 @@ def get_registry(n_samples: int, is_imbalanced: bool,
         "Random Forest": {
             "needs_scale": False,
             "clf": lambda: RandomForestClassifier(
-                random_state=RANDOM_STATE, class_weight=cw, n_jobs=_N_JOBS,
+                random_state=RANDOM_STATE, class_weight=cw, n_jobs=-1,
             ),
             "param_dist": {
                 "clf__n_estimators":     [100, 200, 300],
@@ -175,7 +171,7 @@ def get_registry(n_samples: int, is_imbalanced: bool,
             "needs_scale": False,
             "clf": lambda: XGBClassifier(
                 random_state=RANDOM_STATE,
-                n_jobs=_N_JOBS,
+                n_jobs=-1,
                 eval_metric="logloss",
                 verbosity=0,
                 scale_pos_weight=_spw,
@@ -198,7 +194,7 @@ def get_registry(n_samples: int, is_imbalanced: bool,
             "needs_scale": False,
             "clf": lambda: LGBMClassifier(
                 random_state=RANDOM_STATE,
-                n_jobs=_N_JOBS,
+                n_jobs=-1,
                 verbose=-1,
                 class_weight=cw,
                 n_estimators=200,

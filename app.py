@@ -66,14 +66,8 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
     """Displays the Predictive Signal Assessment results."""
     from src.signal_assessor import assess_predictive_signal
 
-    cache_key = f"signal_{len(df)}_{target_col}_{id_col}"
-    if st.session_state.get("_signal_cache_key") != cache_key:
-        with st.spinner("Analysing predictive signal…"):
-            result = assess_predictive_signal(df, target_col, id_col)
-        st.session_state["_signal_result"]    = result
-        st.session_state["_signal_cache_key"] = cache_key
-    else:
-        result = st.session_state["_signal_result"]
+    with st.spinner("Analysing predictive signal…"):
+        result = assess_predictive_signal(df, target_col, id_col)
 
     if result.get("error"):
         st.warning(f"Signal assessment skipped: {result['error']}")
