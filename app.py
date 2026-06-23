@@ -232,7 +232,7 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             st.warning(
                 f"⚠️ Imbalanced dataset - churn rate: **{churn_rate:.1%}**. "
                 "Using class_weight='balanced' + exact scale_pos_weight. "
-                "Best model selected by ROC-AUC × F1 × Recall composite score."
+                "Best model selected by Best Overall Score: 0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC."
             )
 
         upd(15, f"✅ {n:,} rows · {X_raw.shape[1]} features · churn rate {churn_rate:.1%}")
