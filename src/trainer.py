@@ -79,16 +79,22 @@ def train_all_models(
         if progress_callback:
             progress_callback(name, i, total,
                               f"Optuna {n_trials} trials · 5-fold CV")
+
+        # Optuna-level callback: fires after every trial → keeps WebSocket alive
+        optuna_cb = _make_optuna_cb(progress_callback, name, i, total, n_trials)
+
         t0 = time.time()
         try:
             if name in _BOOSTING:
                 res = _train_boosting(name, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
-                                      n_trials, spw, cw, acw)
+                                      n_trials, spw, cw, acw,
+                                      optuna_callbacks=optuna_cb)
             else:
                 res = _train_standard(name, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
-                                      n_trials, cw, is_imbalanced)
+                                      n_trials, cw, is_imbalanced,
+                                      optuna_callbacks=optuna_cb)
             res["train_time"] = time.time() - t0
             results[name] = res
         except Exception as exc:
@@ -104,7 +110,7 @@ def train_all_models(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
-                    n_trials, cw, is_imbalanced):
+                    n_trials, cw, is_imbalanced, optuna_callbacks=None):
     needs_scale = (name == "Logistic Regression")
 
     def objective(trial):
@@ -119,7 +125,8 @@ def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
                                      n_jobs=-1).mean())
 
     study = _new_study()
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False,
+                   callbacks=optuna_callbacks or [])
 
     best  = study.best_params
     pre   = build_preprocessor(num_cols, cat_cols, bool_cols, scale=needs_scale)
@@ -138,7 +145,7 @@ def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _train_boosting(name, X_train, y_train, num_cols, cat_cols, bool_cols,
-                    n_trials, spw, cw, acw):
+                    n_trials, spw, cw, acw, optuna_callbacks=None):
     cv = StratifiedKFold(n_splits=_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
 
     def objective(trial):
@@ -166,7 +173,8 @@ def _train_boosting(name, X_train, y_train, num_cols, cat_cols, bool_cols,
         return float(np.mean(fold_scores))
 
     study = _new_study()
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False,
+                   callbacks=optuna_callbacks or [])
 
     best_params = study.best_params
     best_n_est  = study.best_trial.user_attrs.get("best_n_estimators", 200)
@@ -376,3 +384,27 @@ def _new_study() -> optuna.Study:
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE),
     )
+
+
+def _make_optuna_cb(streamlit_cb, name, model_idx, total_models, n_trials):
+    """
+    Returns an Optuna study callback list that fires after every trial.
+    Calls the Streamlit progress_callback → keeps the WebSocket alive during
+    long training runs (prevents 'SessionInfo not initialized' timeout errors).
+    """
+    if streamlit_cb is None:
+        return []
+
+    def _inner(study: optuna.Study, trial: optuna.trial.FrozenTrial):
+        completed = trial.number + 1
+        try:
+            best_val = study.best_value
+            detail = f"trial {completed}/{n_trials} · best ROC-AUC {best_val:.4f}"
+        except Exception:
+            detail = f"trial {completed}/{n_trials}"
+        try:
+            streamlit_cb(name, model_idx, total_models, detail)
+        except Exception:
+            pass  # never crash the Optuna loop over a UI error
+
+    return [_inner]
