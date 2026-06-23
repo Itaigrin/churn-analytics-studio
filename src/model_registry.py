@@ -27,8 +27,7 @@ from sklearn.tree import DecisionTreeClassifier
 import os as _os
 from .config import RANDOM_STATE
 
-_ON_CLOUD = _os.path.exists("/mount/src")
-_N_JOBS   = 1 if _ON_CLOUD else -1
+_N_JOBS = -1
 
 
 # ── Optional library imports ──────────────────────────────────────────────────

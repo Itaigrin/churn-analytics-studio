@@ -40,7 +40,7 @@ _ON_CLOUD = _os.path.exists("/mount/src")
 
 PIPELINE_CONFIG = {
     "cv_folds":      3,
-    "n_iter":        10 if _ON_CLOUD else 15,
+    "n_iter":        15,
     "optuna_trials": 0,
 }
 
