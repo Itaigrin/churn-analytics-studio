@@ -285,6 +285,7 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         # Step 11: Cross-validation evaluation on full dataset for reliable metrics
         upd(93, "Step 11 - Cross-validation evaluation (5 folds) for reliable metrics…")
         from src.evaluator import evaluate_model_cv
+        from sklearn.base import clone
         X_full = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
         y_full = pd.concat([
             pd.Series(y_train.values, name=y_train.name),
@@ -292,6 +293,12 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         ], axis=0).reset_index(drop=True)
         cv_metrics = evaluate_model_cv(results[best_name]["model"], X_full, y_full, cv_folds=5)
         results[best_name].update(cv_metrics)
+
+        # Step 12: Retrain best model on full dataset (train + test) for stronger predictions
+        upd(97, "Step 12 - Retraining best model on full dataset for stronger predictions…")
+        final_model = clone(results[best_name]["model"])
+        final_model.fit(X_full, y_full)
+        results[best_name]["model"] = final_model
 
         total_runtime = time.time() - t_start
 
@@ -356,7 +363,8 @@ def _show_results():
     if use_cv:
         st.info(
             "📊 Metrics below are **averaged over 5-fold cross-validation** on the full dataset "
-            "— a reliable estimate of how the model will perform on new unseen customers.",
+            "— a reliable estimate of how the model will perform on new unseen customers. "
+            "The model used for predictions was retrained on **100% of your data** for maximum accuracy.",
             icon=None,
         )
 
