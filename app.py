@@ -693,6 +693,16 @@ def _predict_section():
         df_new = load_uploaded_file(new_file)
         df_new_original = df_new.copy()
         df_new = raw_clean(df_new)
+
+        # Apply the same feature engineering used during training so the model
+        # receives actual computed values (not median-imputed NaNs) for engineered cols.
+        from src.feature_engineering import engineer_features as _eng
+        _new_feat_names = st.session_state.get("new_feature_names") or []
+        if _new_feat_names:
+            _orig_numeric = [c for c in profile["numeric_cols"]
+                             if c not in set(_new_feat_names)]
+            df_new, _ = _eng(df_new, _orig_numeric)
+
         st.success(f"✅ Loaded **{len(df_new):,}** new customers")
     except Exception as e:
         st.error(f"Could not load file: {e}")
