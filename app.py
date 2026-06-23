@@ -277,10 +277,21 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             progress_callback=_cb,
         )
 
-        # Step 10: Evaluate + threshold optimisation
-        upd(91, "Step 10 - Evaluating on test set + optimising decision threshold…")
+        # Step 10: Evaluate + pick best model
+        upd(88, "Step 10 - Evaluating on test set…")
         results   = evaluate_all(results, X_train, y_train, X_test, y_test)
         best_name = pick_best_model(results, actual_positives=int(y_test.sum()))
+
+        # Step 11: Cross-validation evaluation on full dataset for reliable metrics
+        upd(93, "Step 11 - Cross-validation evaluation (5 folds) for reliable metrics…")
+        from src.evaluator import evaluate_model_cv
+        X_full = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
+        y_full = pd.concat([
+            pd.Series(y_train.values, name=y_train.name),
+            pd.Series(y_test.values,  name=y_test.name),
+        ], axis=0).reset_index(drop=True)
+        cv_metrics = evaluate_model_cv(results[best_name]["model"], X_full, y_full, cv_folds=5)
+        results[best_name].update(cv_metrics)
 
         total_runtime = time.time() - t_start
 
@@ -331,26 +342,35 @@ def _show_results():
     # ── Step 10: Primary Metrics ──────────────────────────────────────────────
     _sec("📈", "Step 4 - Evaluation Results")
 
-    roc    = best.get("roc_auc",           0)
-    recall = best.get("recall",            0)
-    pr_auc = best.get("pr_auc",            0)
-    score  = best.get("best_overall_score",0)
+    # Use CV metrics if available (more reliable), fallback to single-split
+    use_cv   = "cv_pr_auc" in best
+    roc      = best.get("cv_roc_auc",           best.get("roc_auc",            0))
+    recall   = best.get("cv_recall",            best.get("recall",             0))
+    pr_auc   = best.get("cv_pr_auc",            best.get("pr_auc",             0))
+    score    = best.get("cv_best_overall_score", best.get("best_overall_score", 0))
+    cv_label = " (5-fold CV avg)" if use_cv else ""
 
     mins = int(total_runtime // 60)
     secs = int(total_runtime % 60)
     st.caption(f"⏱️ Total pipeline runtime: **{mins}m {secs}s**")
+    if use_cv:
+        st.info(
+            "📊 Metrics below are **averaged over 5-fold cross-validation** on the full dataset "
+            "— a reliable estimate of how the model will perform on new unseen customers.",
+            icon=None,
+        )
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("🏆 Best Model",        best_name,
               help="Selected by the highest Best Overall Score.")
     k2.metric("Best Overall Score",   f"{score:.4f}",
-              help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC")
+              help=f"0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC{cv_label}")
     k3.metric("PR-AUC",               f"{pr_auc:.4f}",
-              help="Measures how well the model identifies customers who are likely to churn while keeping false alarms as low as possible. A higher PR-AUC means the model is better at finding real churn customers without incorrectly flagging too many loyal customers.")
+              help=f"Measures how well the model identifies customers who are likely to churn while keeping false alarms as low as possible. A higher PR-AUC means the model is better at finding real churn customers without incorrectly flagging too many loyal customers.{cv_label}")
     k4.metric("Recall",               f"{recall:.4f}",
-              help="Measures how many customers who actually churned were correctly identified by the model. A higher Recall means fewer at-risk customers are missed, helping businesses take action before customers leave. Higher is better (range: 0-1).")
+              help=f"Measures how many customers who actually churned were correctly identified by the model. A higher Recall means fewer at-risk customers are missed, helping businesses take action before customers leave. Higher is better (range: 0-1).{cv_label}")
     k5.metric("ROC-AUC",              f"{roc:.4f}",
-              help="Measures the model's overall ability to distinguish between customers who will churn and those who will stay. A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds.")
+              help=f"Measures the model's overall ability to distinguish between customers who will churn and those who will stay. A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds.{cv_label}")
 
     # Overfitting check
     train_roc = best.get("train_roc_auc", 0)

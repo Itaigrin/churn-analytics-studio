@@ -155,6 +155,57 @@ def pick_best_model(results: dict, **_kwargs) -> str:
     return best_name
 
 
+# ── Cross-validation evaluation on full dataset ───────────────────────────────
+
+def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5) -> dict:
+    """
+    Run StratifiedKFold CV on the full dataset using the best model's configuration.
+    Returns averaged metrics — far more reliable than a single train/test split.
+    """
+    from sklearn.base import clone
+    from sklearn.model_selection import StratifiedKFold
+
+    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+
+    pr_aucs, recalls, roc_aucs = [], [], []
+
+    for train_idx, test_idx in skf.split(X_full, y_full):
+        X_tr = X_full.iloc[train_idx]
+        X_te = X_full.iloc[test_idx]
+        y_tr = y_full.iloc[train_idx]
+        y_te = y_full.iloc[test_idx]
+
+        m = clone(best_pipe)
+        m.fit(X_tr, y_tr)
+
+        y_prob = m.predict_proba(X_te)[:, 1] if hasattr(m, "predict_proba") else None
+        y_pred = m.predict(X_te)
+
+        if y_prob is not None:
+            pr_aucs.append(float(average_precision_score(y_te, y_prob)))
+            roc_aucs.append(float(roc_auc_score(y_te, y_prob)))
+        recalls.append(float(recall_score(y_te, y_pred, zero_division=0)))
+
+    pr_auc  = float(np.mean(pr_aucs))  if pr_aucs  else float("nan")
+    recall  = float(np.mean(recalls))
+    roc_auc = float(np.mean(roc_aucs)) if roc_aucs else float("nan")
+
+    return {
+        "cv_pr_auc":            pr_auc,
+        "cv_recall":            recall,
+        "cv_roc_auc":           roc_auc,
+        "cv_pr_auc_std":        float(np.std(pr_aucs))  if pr_aucs  else 0.0,
+        "cv_recall_std":        float(np.std(recalls)),
+        "cv_roc_auc_std":       float(np.std(roc_aucs)) if roc_aucs else 0.0,
+        "cv_best_overall_score": (
+            SCORE_WEIGHT_PR_AUC * pr_auc
+            + SCORE_WEIGHT_RECALL * recall
+            + SCORE_WEIGHT_ROC * roc_auc
+        ),
+        "cv_folds": cv_folds,
+    }
+
+
 # ── Comparison table ──────────────────────────────────────────────────────────
 
 def build_comparison_table(results: dict) -> pd.DataFrame:
