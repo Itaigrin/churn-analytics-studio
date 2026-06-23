@@ -157,10 +157,12 @@ def pick_best_model(results: dict, **_kwargs) -> str:
 
 # ── Cross-validation evaluation on full dataset ───────────────────────────────
 
-def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5) -> dict:
+def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5,
+                      threshold: float = 0.50) -> dict:
     """
     Run StratifiedKFold CV on the full dataset using the best model's configuration.
-    Returns averaged metrics — far more reliable than a single train/test split.
+    threshold should match the threshold used for production predictions so that
+    the reported Recall reflects what users will actually see on new customers.
     """
     from sklearn.base import clone
     from sklearn.model_selection import StratifiedKFold
@@ -179,11 +181,15 @@ def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5) -> dict:
         m.fit(X_tr, y_tr)
 
         y_prob = m.predict_proba(X_te)[:, 1] if hasattr(m, "predict_proba") else None
-        y_pred = m.predict(X_te)
 
+        # Apply the same threshold that will be used in production predictions
         if y_prob is not None:
+            y_pred = (y_prob >= threshold).astype(int)
             pr_aucs.append(float(average_precision_score(y_te, y_prob)))
             roc_aucs.append(float(roc_auc_score(y_te, y_prob)))
+        else:
+            y_pred = m.predict(X_te)
+
         recalls.append(float(recall_score(y_te, y_pred, zero_division=0)))
 
     pr_auc  = float(np.mean(pr_aucs))  if pr_aucs  else float("nan")

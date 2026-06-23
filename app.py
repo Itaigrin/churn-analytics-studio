@@ -282,23 +282,21 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         results   = evaluate_all(results, X_train, y_train, X_test, y_test)
         best_name = pick_best_model(results, actual_positives=int(y_test.sum()))
 
-        # Step 11: Cross-validation evaluation on full dataset for reliable metrics
+        # Step 11: Cross-validation evaluation — uses the same threshold as production predictions
         upd(93, "Step 11 - Cross-validation evaluation (5 folds) for reliable metrics…")
         from src.evaluator import evaluate_model_cv
-        from sklearn.base import clone
         X_full = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
         y_full = pd.concat([
             pd.Series(y_train.values, name=y_train.name),
             pd.Series(y_test.values,  name=y_test.name),
         ], axis=0).reset_index(drop=True)
-        cv_metrics = evaluate_model_cv(results[best_name]["model"], X_full, y_full, cv_folds=5)
+        # Pass the optimized threshold so CV Recall matches what predictions will produce
+        opt_thr_for_cv = results[best_name].get("best_threshold", 0.50)
+        cv_metrics = evaluate_model_cv(
+            results[best_name]["model"], X_full, y_full,
+            cv_folds=5, threshold=opt_thr_for_cv,
+        )
         results[best_name].update(cv_metrics)
-
-        # Step 12: Retrain best model on full dataset (train + test) for stronger predictions
-        upd(97, "Step 12 - Retraining best model on full dataset for stronger predictions…")
-        final_model = clone(results[best_name]["model"])
-        final_model.fit(X_full, y_full)
-        results[best_name]["model"] = final_model
 
         total_runtime = time.time() - t_start
 
@@ -361,10 +359,11 @@ def _show_results():
     secs = int(total_runtime % 60)
     st.caption(f"⏱️ Total pipeline runtime: **{mins}m {secs}s**")
     if use_cv:
+        _thr_display = best.get("best_threshold", 0.50)
         st.info(
-            "📊 Metrics below are **averaged over 5-fold cross-validation** on the full dataset "
-            "— a reliable estimate of how the model will perform on new unseen customers. "
-            "The model used for predictions was retrained on **100% of your data** for maximum accuracy.",
+            f"📊 Metrics below are **averaged over 5-fold cross-validation** on the full dataset, "
+            f"computed at the same decision threshold ({_thr_display:.2f}) used for predictions "
+            "— the closest estimate of how the model will perform on new unseen customers.",
             icon=None,
         )
 
