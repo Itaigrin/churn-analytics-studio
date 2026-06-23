@@ -67,7 +67,7 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
     from src.signal_assessor import assess_predictive_signal
 
     _data_hash = hash(df.to_csv(index=False)[:5000])
-        cache_key  = f"signal_{len(df)}_{target_col}_{id_col}_{_data_hash}"
+    cache_key  = f"signal_{len(df)}_{target_col}_{id_col}_{_data_hash}"
     if st.session_state.get("_signal_cache_key") != cache_key:
         with st.spinner("Analysing predictive signal…"):
             result = assess_predictive_signal(df, target_col, id_col)
