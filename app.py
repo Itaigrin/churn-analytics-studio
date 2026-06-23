@@ -664,7 +664,6 @@ def _predict_section():
     """New customer prediction UI."""
     from src.data_loader import load_uploaded_file
     from src.pipeline_builder import raw_clean
-    from src.predictor import predict_new_customers
     from src.utils import to_csv_bytes
 
     profile   = st.session_state.profile
@@ -687,54 +686,54 @@ def _predict_section():
             "Upload raw customer data - same columns as training, minus the target."
         )
 
-    if new_file is None:
-        st.session_state.pred_raw_probs = None
+    # ── When a file is present: load & preprocess (cached by file identity) ───
+    if new_file is not None:
+        file_key = f"{new_file.name}_{new_file.size}"
+        if st.session_state.get("_pred_file_key") != file_key:
+            try:
+                df_new = load_uploaded_file(new_file)
+                df_new_original = df_new.copy()
+                df_new = raw_clean(df_new)
+
+                from src.feature_engineering import engineer_features as _eng
+                _new_feat_names = st.session_state.get("new_feature_names") or []
+                if _new_feat_names:
+                    _orig_numeric = [c for c in profile["numeric_cols"]
+                                     if c not in set(_new_feat_names)]
+                    df_new, _ = _eng(df_new, _orig_numeric)
+
+                from src.profiler import detect_id_column
+                auto_id_new = detect_id_column(df_new)
+                known_cols = (profile["numeric_cols"]
+                              + profile["categorical_cols"]
+                              + profile["boolean_cols"])
+                for col in known_cols:
+                    if col not in df_new.columns:
+                        df_new[col] = np.nan
+                X_new   = df_new[[c for c in known_cols if c in df_new.columns]].copy()
+                ids_new = (df_new[auto_id_new]
+                           if auto_id_new and auto_id_new in df_new.columns
+                           else pd.Series(range(len(df_new)), name="row_id"))
+
+                # New file → clear previous prediction results
+                st.session_state._pred_file_key = file_key
+                st.session_state._pred_X_new    = X_new
+                st.session_state._pred_ids_new  = ids_new
+                st.session_state._pred_df_orig  = df_new_original.reset_index(drop=True)
+                st.session_state.pred_raw_probs = None
+            except Exception as e:
+                st.error(f"Could not load file: {e}")
+                return
+
+        st.success(f"✅ Loaded **{len(st.session_state._pred_X_new):,}** new customers")
+
+    # ── Nothing uploaded and no stored predictions → nothing to show ──────────
+    if new_file is None and st.session_state.get("pred_raw_probs") is None:
         return
 
-    # ── Load & preprocess (cached by file identity) ───────────────────────────
-    file_key = f"{new_file.name}_{new_file.size}"
-    if st.session_state.get("_pred_file_key") != file_key:
-        try:
-            df_new = load_uploaded_file(new_file)
-            df_new_original = df_new.copy()
-            df_new = raw_clean(df_new)
-
-            from src.feature_engineering import engineer_features as _eng
-            _new_feat_names = st.session_state.get("new_feature_names") or []
-            if _new_feat_names:
-                _orig_numeric = [c for c in profile["numeric_cols"]
-                                 if c not in set(_new_feat_names)]
-                df_new, _ = _eng(df_new, _orig_numeric)
-
-            from src.profiler import detect_id_column
-            auto_id_new = detect_id_column(df_new)
-            known_cols = (profile["numeric_cols"]
-                          + profile["categorical_cols"]
-                          + profile["boolean_cols"])
-            for col in known_cols:
-                if col not in df_new.columns:
-                    df_new[col] = np.nan
-            X_new   = df_new[[c for c in known_cols if c in df_new.columns]].copy()
-            ids_new = (df_new[auto_id_new] if auto_id_new and auto_id_new in df_new.columns
-                       else pd.Series(range(len(df_new)), name="row_id"))
-
-            st.session_state._pred_file_key  = file_key
-            st.session_state._pred_X_new     = X_new
-            st.session_state._pred_ids_new   = ids_new
-            st.session_state._pred_df_orig   = df_new_original.reset_index(drop=True)
-            st.session_state.pred_raw_probs  = None   # clear old results on new file
-        except Exception as e:
-            st.error(f"Could not load file: {e}")
-            return
-
-    X_new        = st.session_state._pred_X_new
-    ids_new      = st.session_state._pred_ids_new
-    df_new_orig  = st.session_state._pred_df_orig
-    st.success(f"✅ Loaded **{len(X_new):,}** new customers")
-
-    # ── Threshold selector ────────────────────────────────────────────────────
-    auto_thr   = float(best.get("best_threshold", 0.50))
-    thr_curve  = best.get("threshold_curve")
+    # ── Threshold selector (always visible once a file was ever loaded) ───────
+    auto_thr  = float(best.get("best_threshold", 0.50))
+    thr_curve = best.get("threshold_curve")
 
     st.markdown("#### Sensitivity Setting")
     sl_col, hint_col = st.columns([3, 2])
@@ -746,7 +745,7 @@ def _predict_section():
             help=(
                 "Controls the trade-off between catching churners and avoiding false alarms.\n\n"
                 "Lower → more customers flagged as churners (higher Recall, more false alarms).\n\n"
-                "Higher → only high-confidence predictions flagged (fewer false alarms, may miss some churners)."
+                "Higher → only high-confidence predictions flagged (fewer false alarms, may miss some)."
             ),
         )
         if thr_curve is not None:
@@ -758,33 +757,39 @@ def _predict_section():
                 f"estimated Recall ≈ **{est_rec:.0%}** · "
                 f"estimated Precision ≈ **{est_prec:.0%}**"
             )
-
     with hint_col:
         if selected_thr <= 0.40:
-            st.info("🔍 **High Recall mode** — catches the most churners, but also flags some loyal customers as at-risk.")
+            st.info("🔍 **High Recall** — catches the most churners, but also flags some loyal customers as at-risk.")
         elif selected_thr <= 0.55:
-            st.info("⚖️ **Balanced mode** — best F1 balance between catching churners and avoiding false alarms.")
+            st.info("⚖️ **Balanced** — best F1 balance between catching churners and avoiding false alarms.")
         else:
-            st.info("🎯 **High Precision mode** — only flags customers the model is very confident about. Fewer false alarms, but may miss some real churners.")
+            st.info("🎯 **High Precision** — only flags customers the model is very confident about. Fewer false alarms, may miss some churners.")
 
-    # ── Predict button ────────────────────────────────────────────────────────
-    if st.button("🔮 Predict Churn", type="primary", key="predict_btn"):
-        with st.spinner("Running predictions…"):
-            try:
-                raw_probs = best_pipe.predict_proba(X_new)[:, 1]
-                st.session_state.pred_raw_probs   = raw_probs
-                st.session_state.pred_ids         = ids_new
-                st.session_state.pred_df_orig     = df_new_orig
-            except Exception as e:
-                st.error(f"Prediction failed: {e}")
-                with st.expander("Traceback"):
-                    st.code(traceback.format_exc())
-                return
+    # ── Predict button (only when a file is loaded) ───────────────────────────
+    if new_file is not None:
+        if st.button("🔮 Predict Churn", type="primary", key="predict_btn"):
+            with st.spinner("Running predictions…"):
+                try:
+                    X_new   = st.session_state._pred_X_new
+                    ids_new = st.session_state._pred_ids_new
+                    raw_probs = best_pipe.predict_proba(X_new)[:, 1]
+                    st.session_state.pred_raw_probs  = raw_probs
+                    st.session_state.pred_ids        = ids_new
+                    st.session_state.pred_df_orig    = st.session_state._pred_df_orig
+                except Exception as e:
+                    st.error(f"Prediction failed: {e}")
+                    with st.expander("Traceback"):
+                        st.code(traceback.format_exc())
+                    return
 
-    # ── Results (apply current threshold to stored probabilities) ─────────────
+    # ── Results (apply selected threshold to stored probabilities) ────────────
     raw_probs = st.session_state.get("pred_raw_probs")
     if raw_probs is None:
         return
+
+    # File was cleared by Streamlit but results are still valid — show a note
+    if new_file is None:
+        st.caption("Showing results from previous prediction. Re-upload the file above to run new predictions.")
 
     ids_display  = st.session_state.pred_ids
     df_orig_disp = st.session_state.pred_df_orig
