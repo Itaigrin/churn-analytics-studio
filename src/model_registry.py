@@ -110,10 +110,11 @@ def get_registry(n_samples: int, is_imbalanced: bool,
                 random_state=RANDOM_STATE, class_weight=cw, n_jobs=_N_JOBS,
             ),
             "param_dist": {
-                "clf__n_estimators":     [100, 200, 300],
-                "clf__max_depth":        [4, 6, 8, 12, None],
-                "clf__min_samples_leaf": [1, 2, 4, 8],
+                "clf__n_estimators":     [200, 300, 500],
+                "clf__max_depth":        [4, 6, 8, None],   # removed 12
+                "clf__min_samples_leaf": [4, 8, 16, 32],    # raised minimum — prevents memorisation
                 "clf__max_features":     ["sqrt", "log2"],
+                "clf__max_samples":      [0.7, 0.8, None],  # row subsampling per tree
             },
         },
 
@@ -180,13 +181,15 @@ def get_registry(n_samples: int, is_imbalanced: bool,
                 scale_pos_weight=_spw,
             ),
             "param_dist": {
-                "clf__n_estimators":     [100, 200],
-                "clf__max_depth":        [3, 4, 5, 6],
-                "clf__learning_rate":    [0.05, 0.1, 0.2],
-                "clf__subsample":        [0.7, 0.8, 1.0],
-                "clf__colsample_bytree": [0.7, 0.8, 1.0],
-                "clf__reg_alpha":        [0, 0.1, 1.0],
-                "clf__reg_lambda":       [1.0, 5.0],
+                "clf__n_estimators":      [100, 200, 300],
+                "clf__max_depth":         [3, 4, 5],        # removed 6 — prevents deep memorisation
+                "clf__learning_rate":     [0.03, 0.05, 0.1],
+                "clf__subsample":         [0.6, 0.7, 0.8],  # more row subsampling
+                "clf__colsample_bytree":  [0.6, 0.7, 0.8],  # more feature subsampling
+                "clf__reg_alpha":         [0.1, 0.5, 1.0, 5.0],
+                "clf__reg_lambda":        [1.0, 5.0, 10.0],
+                "clf__min_child_weight":  [3, 5, 10],        # prevents splits on tiny groups
+                "clf__gamma":             [0, 0.1, 0.5, 1.0], # min loss reduction to split
             },
         }
 
@@ -203,14 +206,15 @@ def get_registry(n_samples: int, is_imbalanced: bool,
                 n_estimators=200,
             ),
             "param_dist": {
-                "clf__n_estimators":     [100, 200],
-                "clf__max_depth":        [3, 4, 5, 6, -1],
-                "clf__learning_rate":    [0.05, 0.1, 0.2],
-                "clf__num_leaves":       [31, 63, 127],
-                "clf__subsample":        [0.7, 0.8, 1.0],
-                "clf__colsample_bytree": [0.7, 0.8, 1.0],
-                "clf__reg_alpha":        [0, 0.1, 1.0],
-                "clf__reg_lambda":       [1.0, 5.0],
+                "clf__n_estimators":     [100, 200, 300],
+                "clf__max_depth":        [3, 4, 5, -1],     # removed 6
+                "clf__learning_rate":    [0.03, 0.05, 0.1],
+                "clf__num_leaves":       [15, 31, 63],       # reduced max leaves
+                "clf__subsample":        [0.6, 0.7, 0.8],
+                "clf__colsample_bytree": [0.6, 0.7, 0.8],
+                "clf__reg_alpha":        [0.1, 0.5, 1.0, 5.0],
+                "clf__reg_lambda":       [1.0, 5.0, 10.0],
+                "clf__min_data_in_leaf": [20, 40, 80],       # prevents tiny leaf splits
             },
         }
 
@@ -228,10 +232,11 @@ def get_registry(n_samples: int, is_imbalanced: bool,
                 iterations=200,
             ),
             "param_dist": {
-                "clf__iterations":    [100, 200],
-                "clf__depth":         [4, 5, 6, 7],
-                "clf__learning_rate": [0.05, 0.1, 0.2],
-                "clf__l2_leaf_reg":   [1, 3, 5, 9],
+                "clf__iterations":    [100, 200, 300],
+                "clf__depth":         [3, 4, 5, 6],         # removed 7
+                "clf__learning_rate": [0.03, 0.05, 0.1],
+                "clf__l2_leaf_reg":   [3, 5, 9, 15],        # stronger L2
+                "clf__min_data_in_leaf": [10, 20, 40],      # prevents tiny splits
             },
         }
 
