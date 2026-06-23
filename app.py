@@ -230,9 +230,9 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             st.warning(f"⚠️ Very large dataset ({n:,} rows). Consider stratified sampling.")
         if is_imbalanced:
             st.warning(
-                f"⚠️ Imbalanced dataset - churn rate: **{churn_rate:.1%}**. "
-                "Using class_weight='balanced' + exact scale_pos_weight. "
-                "Best model selected by Best Overall Score: 0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC."
+                f"⚠️ Only **{churn_rate:.1%}** of customers in this dataset churned. "
+                "When churners are rare, models tend to ignore them and predict 'will stay' for everyone. "
+                "The app automatically adjusts for this so the model pays extra attention to churners and doesn't miss them."
             )
 
         upd(15, f"✅ {n:,} rows · {X_raw.shape[1]} features · churn rate {churn_rate:.1%}")
