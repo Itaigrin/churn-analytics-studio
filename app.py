@@ -706,44 +706,48 @@ def _predict_section():
     # ─────────────────────────────────────────────────────────────────────────
 
     if new_file is None:
-        st.session_state.pred_raw_probs = None
-        return
-
-    # ── Load & preprocess (cached by file identity) ───────────────────────────
-    file_key = f"{new_file.name}_{new_file.size}"
-    if st.session_state.get("_pred_file_key") != file_key:
-        try:
-            df_new = load_uploaded_file(new_file)
-            df_new_original = df_new.copy()
-            df_new = raw_clean(df_new)
-
-            from src.feature_engineering import engineer_features as _eng
-            _new_feat_names = st.session_state.get("new_feature_names") or []
-            if _new_feat_names:
-                _orig_numeric = [c for c in profile["numeric_cols"]
-                                 if c not in set(_new_feat_names)]
-                df_new, _ = _eng(df_new, _orig_numeric)
-
-            from src.profiler import detect_id_column
-            auto_id_new = detect_id_column(df_new)
-            known_cols = (profile["numeric_cols"]
-                          + profile["categorical_cols"]
-                          + profile["boolean_cols"])
-            for col in known_cols:
-                if col not in df_new.columns:
-                    df_new[col] = np.nan
-            X_new   = df_new[[c for c in known_cols if c in df_new.columns]].copy()
-            ids_new = (df_new[auto_id_new] if auto_id_new and auto_id_new in df_new.columns
-                       else pd.Series(range(len(df_new)), name="row_id"))
-
-            st.session_state._pred_file_key  = file_key
-            st.session_state._pred_X_new     = X_new
-            st.session_state._pred_ids_new   = ids_new
-            st.session_state._pred_df_orig   = df_new_original.reset_index(drop=True)
-            st.session_state.pred_raw_probs  = None   # clear old results on new file
-        except Exception as e:
-            st.error(f"Could not load file: {e}")
+        # HuggingFace resets the file uploader on every slider rerun.
+        # If we already loaded the file into session_state, keep using it.
+        if st.session_state.get("_pred_X_new") is None:
+            st.session_state.pred_raw_probs = None
             return
+        # else: fall through and use stored data below
+    else:
+        # ── Load & preprocess (cached by file identity) ───────────────────────
+        file_key = f"{new_file.name}_{new_file.size}"
+        if st.session_state.get("_pred_file_key") != file_key:
+            try:
+                df_new = load_uploaded_file(new_file)
+                df_new_original = df_new.copy()
+                df_new = raw_clean(df_new)
+
+                from src.feature_engineering import engineer_features as _eng
+                _new_feat_names = st.session_state.get("new_feature_names") or []
+                if _new_feat_names:
+                    _orig_numeric = [c for c in profile["numeric_cols"]
+                                     if c not in set(_new_feat_names)]
+                    df_new, _ = _eng(df_new, _orig_numeric)
+
+                from src.profiler import detect_id_column
+                auto_id_new = detect_id_column(df_new)
+                known_cols = (profile["numeric_cols"]
+                              + profile["categorical_cols"]
+                              + profile["boolean_cols"])
+                for col in known_cols:
+                    if col not in df_new.columns:
+                        df_new[col] = np.nan
+                X_new   = df_new[[c for c in known_cols if c in df_new.columns]].copy()
+                ids_new = (df_new[auto_id_new] if auto_id_new and auto_id_new in df_new.columns
+                           else pd.Series(range(len(df_new)), name="row_id"))
+
+                st.session_state._pred_file_key  = file_key
+                st.session_state._pred_X_new     = X_new
+                st.session_state._pred_ids_new   = ids_new
+                st.session_state._pred_df_orig   = df_new_original.reset_index(drop=True)
+                st.session_state.pred_raw_probs  = None   # clear old results on new file
+            except Exception as e:
+                st.error(f"Could not load file: {e}")
+                return
 
     X_new        = st.session_state._pred_X_new
     ids_new      = st.session_state._pred_ids_new
