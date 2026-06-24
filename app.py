@@ -480,6 +480,9 @@ def _show_results():
     # ── Probability Distribution ───────────────────────────────────────────────
     _show_prob_distribution(best, st.session_state.get("y_test"))
 
+    # ── Calibration, Brier Score, Threshold Table, Precision Diagnosis ────────
+    _show_model_diagnostics(best, st.session_state.get("y_test"))
+
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
     _show_professional_analysis(results, best_name, cmp_df)
 
@@ -703,6 +706,163 @@ def _show_guide():
         "Used as a stability check.\n\n"
         "The model with the **highest Best Overall Score** is automatically selected as the winner."
     )
+
+
+def _show_model_diagnostics(best: dict, y_test):
+    """Calibration curve, Brier Score, threshold sensitivity table, and Precision diagnosis."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sklearn.calibration import calibration_curve
+    from sklearn.metrics import brier_score_loss, f1_score, precision_score, recall_score
+
+    y_prob = best.get("y_prob")
+    if y_prob is None or y_test is None:
+        return
+
+    y_arr      = np.asarray(y_test)
+    threshold  = float(best.get("best_threshold", 0.50))
+    churn_rate = float(y_arr.mean())
+    brier      = float(brier_score_loss(y_arr, y_prob))
+
+    # ── Calibration curve + Brier Score ──────────────────────────────────────
+    _sec("🎯", "Calibration Curve & Brier Score")
+    st.caption(
+        "A well-calibrated model's curve follows the diagonal — meaning a predicted "
+        "probability of 0.7 corresponds to 70% of those customers actually churning."
+    )
+
+    col_cal, col_brier = st.columns([3, 1])
+    with col_cal:
+        try:
+            prob_true, prob_pred = calibration_curve(
+                y_arr, y_prob, n_bins=10, strategy="quantile"
+            )
+            fig, ax = plt.subplots(figsize=(6, 4), facecolor="none")
+            ax.set_facecolor("none")
+            ax.plot([0, 1], [0, 1], "k--", linewidth=1.2, label="Perfect calibration")
+            ax.plot(prob_pred, prob_true, "o-", color="#2196F3",
+                    linewidth=2, markersize=6, label="Model")
+            ax.set_xlabel("Mean predicted probability", fontsize=9)
+            ax.set_ylabel("Fraction of positives", fontsize=9)
+            ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+            ax.legend(fontsize=9, framealpha=0.4)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout(pad=0.5)
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+        except Exception:
+            st.info("Calibration curve could not be computed.")
+
+    with col_brier:
+        st.metric(
+            "Brier Score", f"{brier:.4f}",
+            help="Lower is better. 0 = perfect. "
+                 "Measures mean squared error of probability predictions.",
+        )
+        if brier < 0.10:
+            st.success("Excellent")
+        elif brier < 0.15:
+            st.info("Good")
+        elif brier < 0.20:
+            st.warning("Moderate")
+        else:
+            st.error("Poor")
+
+    st.divider()
+
+    # ── Threshold sensitivity table ───────────────────────────────────────────
+    _sec("📋", "Threshold Sensitivity")
+    st.caption("Predicted churn rate and key metrics at each decision threshold.")
+
+    rows = []
+    for t in [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]:
+        y_hat     = (y_prob >= t).astype(int)
+        pred_rate = float(y_hat.mean())
+        rec       = float(recall_score(y_arr, y_hat, zero_division=0))
+        prec      = float(precision_score(y_arr, y_hat, zero_division=0))
+        f1        = float(f1_score(y_arr, y_hat, zero_division=0))
+        label     = f"{t:.2f} ◀ optimal" if abs(t - threshold) < 0.01 else f"{t:.2f}"
+        rows.append({
+            "Threshold":            label,
+            "Predicted Churn Rate": f"{pred_rate:.1%}",
+            "Recall":               f"{rec:.3f}",
+            "Precision":            f"{prec:.3f}",
+            "F1":                   f"{f1:.3f}",
+        })
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.divider()
+
+    # ── Precision diagnosis ───────────────────────────────────────────────────
+    _sec("🔍", "Why Is Precision Low?")
+
+    y_hat_cur = (y_prob >= threshold).astype(int)
+    cur_rec   = float(recall_score(y_arr, y_hat_cur, zero_division=0))
+    cur_prec  = float(precision_score(y_arr, y_hat_cur, zero_division=0))
+    cur_tp    = int(((y_hat_cur == 1) & (y_arr == 1)).sum())
+    cur_fp    = int(((y_hat_cur == 1) & (y_arr == 0)).sum())
+
+    mean_retained = float(y_prob[y_arr == 0].mean()) if (y_arr == 0).any() else 0.5
+    mean_churned  = float(y_prob[y_arr == 1].mean()) if (y_arr == 1).any() else 0.5
+    sep           = mean_churned - mean_retained
+
+    reasons = []
+
+    if churn_rate < 0.30:
+        ratio = round((1 - churn_rate) / churn_rate, 1)
+        reasons.append(
+            f"**Class imbalance ({churn_rate:.1%} churn rate)** — "
+            f"For every churner in the dataset there are {ratio}× more non-churners. "
+            f"Even a model that catches most churners will still flag many non-churners as false positives, "
+            f"which mathematically limits how high Precision can go. "
+            f"At threshold {threshold:.2f}: **{cur_tp} true positives vs {cur_fp} false positives**."
+        )
+
+    if sep < 0.25:
+        reasons.append(
+            f"**Low probability separation (Δ = {sep:.2f})** — "
+            f"Churners average **{mean_churned:.2f}** predicted probability vs "
+            f"**{mean_retained:.2f}** for retained customers. "
+            f"The two groups overlap heavily in probability space, so any threshold "
+            f"will include many non-churners in the flagged population."
+        )
+
+    if threshold < 0.45:
+        reasons.append(
+            f"**Low decision threshold ({threshold:.2f})** — "
+            f"The threshold was optimised for maximum F1, which settled on a low value to boost Recall. "
+            f"Raising it (e.g. to 0.50–0.60) trades some Recall for Precision — "
+            f"see the Threshold Sensitivity table above."
+        )
+
+    if brier > 0.18:
+        reasons.append(
+            f"**Poor probability calibration (Brier Score = {brier:.4f})** — "
+            f"The model's probability outputs are noisy. Well-calibrated probabilities would allow "
+            f"a higher threshold to more cleanly separate the two groups."
+        )
+
+    st.markdown(
+        f"At threshold **{threshold:.2f}**: Recall = **{cur_rec:.3f}** · "
+        f"Precision = **{cur_prec:.3f}**"
+    )
+
+    if not reasons:
+        st.success(
+            f"Precision ({cur_prec:.3f}) is reasonable given the churn rate of {churn_rate:.1%} "
+            f"and the model's separation (Δ = {sep:.2f})."
+        )
+    else:
+        st.markdown("The gap is explained by:")
+        for r in reasons:
+            st.markdown(f"- {r}")
+        st.info(
+            "**To improve Precision:** raise the threshold. "
+            "The Threshold Sensitivity table shows the exact Recall/Precision trade-off at each step."
+        )
+
+    st.divider()
 
 
 def _show_prob_distribution(best: dict, y_test):
