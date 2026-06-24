@@ -341,13 +341,16 @@ def build_comparison_table(results: dict) -> pd.DataFrame:
                 "PR-AUC": "—", "Recall": "—", "ROC-AUC": "—", "Best Overall Score": "—",
             })
             continue
-        score = r.get("best_overall_score", 0.0)
+        pr_auc  = r.get("cv_pr_auc",            r.get("pr_auc",            0))
+        recall  = r.get("cv_recall",             r.get("recall",            0))
+        roc_auc = r.get("cv_roc_auc",            r.get("roc_auc",           0))
+        score   = r.get("cv_best_overall_score", r.get("best_overall_score", 0))
         rows.append({
             "Model":              name,
             "Status":             "✅",
-            "PR-AUC":             f"{r.get('pr_auc', 0):.4f}",
-            "Recall":             f"{r.get('recall', 0):.4f}",
-            "ROC-AUC":            f"{r.get('roc_auc', 0):.4f}",
+            "PR-AUC":             f"{pr_auc:.4f}",
+            "Recall":             f"{recall:.4f}",
+            "ROC-AUC":            f"{roc_auc:.4f}",
             "Best Overall Score": f"{score:.4f}",
         })
 
