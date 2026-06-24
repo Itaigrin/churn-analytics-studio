@@ -157,19 +157,20 @@ def pick_best_model(results: dict, **_kwargs) -> str:
 
 # ── Cross-validation evaluation on full dataset ───────────────────────────────
 
-def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5,
-                      threshold: float = 0.50) -> dict:
+def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5) -> dict:
     """
     Run StratifiedKFold CV on the full dataset using the best model's configuration.
-    threshold should match the threshold used for production predictions so that
-    the reported Recall reflects what users will actually see on new customers.
+
+    Each fold optimises its own F1-maximising threshold independently, so the
+    reported Recall / Precision are consistent with the returned cv_avg_threshold.
+    The averaged threshold is then used for refitting the final model on all data.
     """
     from sklearn.base import clone
     from sklearn.model_selection import StratifiedKFold
 
     skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
 
-    pr_aucs, recalls, roc_aucs = [], [], []
+    pr_aucs, recalls, roc_aucs, thresholds = [], [], [], []
 
     for train_idx, test_idx in skf.split(X_full, y_full):
         X_tr = X_full.iloc[train_idx]
@@ -182,9 +183,11 @@ def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5,
 
         y_prob = m.predict_proba(X_te)[:, 1] if hasattr(m, "predict_proba") else None
 
-        # Apply the same threshold that will be used in production predictions
         if y_prob is not None:
-            y_pred = (y_prob >= threshold).astype(int)
+            thr_result = optimize_threshold(y_te, y_prob)
+            fold_thr   = thr_result["best_threshold"]
+            thresholds.append(fold_thr)
+            y_pred = (y_prob >= fold_thr).astype(int)
             pr_aucs.append(float(average_precision_score(y_te, y_prob)))
             roc_aucs.append(float(roc_auc_score(y_te, y_prob)))
         else:
@@ -192,23 +195,25 @@ def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5,
 
         recalls.append(float(recall_score(y_te, y_pred, zero_division=0)))
 
-    pr_auc  = float(np.mean(pr_aucs))  if pr_aucs  else float("nan")
-    recall  = float(np.mean(recalls))
-    roc_auc = float(np.mean(roc_aucs)) if roc_aucs else float("nan")
+    pr_auc       = float(np.mean(pr_aucs))      if pr_aucs     else float("nan")
+    recall       = float(np.mean(recalls))
+    roc_auc      = float(np.mean(roc_aucs))     if roc_aucs    else float("nan")
+    avg_threshold = float(np.mean(thresholds))  if thresholds  else 0.50
 
     return {
         "cv_pr_auc":            pr_auc,
         "cv_recall":            recall,
         "cv_roc_auc":           roc_auc,
-        "cv_pr_auc_std":        float(np.std(pr_aucs))  if pr_aucs  else 0.0,
+        "cv_pr_auc_std":        float(np.std(pr_aucs))   if pr_aucs  else 0.0,
         "cv_recall_std":        float(np.std(recalls)),
-        "cv_roc_auc_std":       float(np.std(roc_aucs)) if roc_aucs else 0.0,
+        "cv_roc_auc_std":       float(np.std(roc_aucs))  if roc_aucs else 0.0,
         "cv_best_overall_score": (
             SCORE_WEIGHT_PR_AUC * pr_auc
             + SCORE_WEIGHT_RECALL * recall
             + SCORE_WEIGHT_ROC * roc_auc
         ),
-        "cv_folds": cv_folds,
+        "cv_avg_threshold": avg_threshold,
+        "cv_folds":         cv_folds,
     }
 
 

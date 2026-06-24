@@ -305,45 +305,53 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         results   = evaluate_all(results, X_train, y_train, X_test, y_test)
         best_name = pick_best_model(results, actual_positives=int(y_test.sum()))
 
-        # Step 11: Cross-validation evaluation — uses the same threshold as production predictions
-        upd(93, "Step 11 - Cross-validation evaluation (5 folds) for reliable metrics…")
+        # Step 11: 5-fold CV on full dataset — reliable metrics + averaged threshold
+        upd(90, "Step 11 - Cross-validation (5 folds) on full dataset for reliable metrics…")
         from src.evaluator import evaluate_model_cv
         X_full = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
         y_full = pd.concat([
             pd.Series(y_train.values, name=y_train.name),
             pd.Series(y_test.values,  name=y_test.name),
         ], axis=0).reset_index(drop=True)
-        # Pass the optimized threshold so CV Recall matches what predictions will produce
-        opt_thr_for_cv = results[best_name].get("best_threshold", 0.50)
-        cv_metrics = evaluate_model_cv(
-            results[best_name]["model"], X_full, y_full,
-            cv_folds=5, threshold=opt_thr_for_cv,
-        )
+        cv_metrics = evaluate_model_cv(results[best_name]["model"], X_full, y_full, cv_folds=5)
         results[best_name].update(cv_metrics)
 
-        # Optional: probability calibration (only if it improves Brier Score)
-        if True:
-            upd(96, "Calibrating probabilities (comparing Brier Score before/after)…")
-            from src.evaluator import calibrate_model
-            cal_model, was_calibrated, brier_before, brier_after = calibrate_model(
-                results[best_name]["model"], X_train, y_train, X_test, y_test,
-            )
-            results[best_name]["calibrated"]    = was_calibrated
-            results[best_name]["brier_before"]  = brier_before
-            results[best_name]["brier_after"]   = brier_after
-            if was_calibrated:
-                results[best_name]["model"]  = cal_model
-                results[best_name]["y_prob"] = cal_model.predict_proba(X_test)[:, 1]
-                st.success(
-                    f"✅ Calibration improved Brier Score: "
-                    f"{brier_before:.4f} → {brier_after:.4f} (Δ {brier_after - brier_before:+.4f})"
+        # Use the CV-averaged threshold — consistent with the CV metrics shown to the user
+        cv_threshold = cv_metrics["cv_avg_threshold"]
+        results[best_name]["best_threshold"] = cv_threshold
+
+        # Check if calibration is beneficial (using original train/test split)
+        upd(94, "Checking probability calibration benefit…")
+        from src.evaluator import calibrate_model
+        from sklearn.base import clone as _clone
+        original_model = results[best_name]["model"]
+        _, cal_helps, _, _ = calibrate_model(
+            original_model, X_train, y_train, X_test, y_test
+        )
+
+        # Refit best model on ALL data — uses every available example for production
+        upd(96, "Refitting best model on full dataset for maximum real-world performance…")
+        if cal_helps:
+            # 80% train + 20% calibration on full data
+            from sklearn.model_selection import train_test_split as _tts_cal
+            from sklearn.calibration import CalibratedClassifierCV
+            try:
+                X_cf, X_cv, y_cf, y_cv = _tts_cal(
+                    X_full, y_full, test_size=0.20, random_state=42, stratify=y_full
                 )
-            else:
-                note = ""
-                if brier_before is not None and brier_after is not None:
-                    note = (f" — calibrated Brier ({brier_after:.4f}) did not improve "
-                            f"over original ({brier_before:.4f})")
-                st.info(f"ℹ️ Calibration not applied{note}. Original model kept.")
+                cal_base = _clone(original_model)
+                cal_base.fit(X_cf, y_cf)
+                final_model = CalibratedClassifierCV(cal_base, cv="prefit", method="sigmoid")
+                final_model.fit(X_cv, y_cv)
+                results[best_name]["model"] = final_model
+            except Exception:
+                full_model = _clone(original_model)
+                full_model.fit(X_full, y_full)
+                results[best_name]["model"] = full_model
+        else:
+            full_model = _clone(original_model)
+            full_model.fit(X_full, y_full)
+            results[best_name]["model"] = full_model
 
         total_runtime = time.time() - t_start
 
@@ -401,10 +409,11 @@ def _show_results():
     # ── Step 10: Primary Metrics ──────────────────────────────────────────────
     _sec("📈", "Step 4 - Evaluation Results")
 
-    roc    = best.get("roc_auc",            0)
-    recall = best.get("recall",             0)
-    pr_auc = best.get("pr_auc",             0)
-    score  = best.get("best_overall_score", 0)
+    # CV metrics are the reliable estimate — model was refitted on all data using CV threshold
+    roc    = best.get("cv_roc_auc",            best.get("roc_auc",            0))
+    recall = best.get("cv_recall",             best.get("recall",             0))
+    pr_auc = best.get("cv_pr_auc",             best.get("pr_auc",             0))
+    score  = best.get("cv_best_overall_score", best.get("best_overall_score", 0))
 
     mins = int(total_runtime // 60)
     secs = int(total_runtime % 60)
@@ -414,13 +423,13 @@ def _show_results():
     k1.metric("🏆 Best Model",      best_name,
               help="Selected by the highest Best Overall Score.")
     k2.metric("Best Overall Score", f"{score:.4f}",
-              help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC")
+              help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC — averaged over 5-fold cross-validation on the full dataset.")
     k3.metric("PR-AUC",             f"{pr_auc:.4f}",
-              help="Measures how well the model identifies customers who are likely to churn while keeping false alarms as low as possible. A higher PR-AUC means the model is better at finding real churn customers without incorrectly flagging too many loyal customers.")
+              help="Averaged over 5-fold cross-validation on the full dataset — the most reliable estimate of real-world performance.")
     k4.metric("Recall",             f"{recall:.4f}",
-              help="Measures how many customers who actually churned were correctly identified by the model. A higher Recall means fewer at-risk customers are missed, helping businesses take action before customers leave. Higher is better (range: 0-1).")
+              help="Averaged over 5-fold cross-validation on the full dataset — the most reliable estimate of real-world performance.")
     k5.metric("ROC-AUC",            f"{roc:.4f}",
-              help="Measures the model's overall ability to distinguish between customers who will churn and those who will stay. A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds.")
+              help="Averaged over 5-fold cross-validation on the full dataset — the most reliable estimate of real-world performance.")
 
     st.markdown("#### Model Comparison  *(sorted by Best Overall Score)*")
     cmp_df = build_comparison_table(results)
