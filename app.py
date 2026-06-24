@@ -357,6 +357,7 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             y_train           = y_train,
             y_test            = y_test,
             new_feature_names = new_feat_names,
+            train_cols        = list(X_train.columns),
             results           = results,
             best_model_name   = best_name,
             selected_info     = [],
@@ -364,6 +365,12 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             churn_rate        = churn_rate,
             is_imbalanced     = is_imbalanced,
             training_done     = True,
+            # Clear prediction cache so X_new is rebuilt against the new model
+            _pred_file_key    = None,
+            _pred_X_new       = None,
+            _pred_ids_new     = None,
+            _pred_df_orig     = None,
+            pred_raw_probs    = None,
         ))
 
         upd(100, f"✅ Done in {total_runtime:.0f}s")
@@ -796,6 +803,10 @@ def _predict_section():
     if st.button("🔮 Predict Churn", type="primary", key="predict_btn"):
         with st.spinner("Running predictions…"):
             try:
+                # Align X_new columns exactly to what the model was trained on
+                train_cols = st.session_state.get("train_cols")
+                if train_cols:
+                    X_new = X_new.reindex(columns=train_cols, fill_value=np.nan)
                 raw_probs = best_pipe.predict_proba(X_new)[:, 1]
                 st.session_state.pred_raw_probs   = raw_probs
                 st.session_state.pred_ids         = ids_new
