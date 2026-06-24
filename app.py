@@ -401,37 +401,26 @@ def _show_results():
     # ── Step 10: Primary Metrics ──────────────────────────────────────────────
     _sec("📈", "Step 4 - Evaluation Results")
 
-    # Use CV metrics if available (more reliable), fallback to single-split
-    use_cv   = "cv_pr_auc" in best
-    roc      = best.get("cv_roc_auc",           best.get("roc_auc",            0))
-    recall   = best.get("cv_recall",            best.get("recall",             0))
-    pr_auc   = best.get("cv_pr_auc",            best.get("pr_auc",             0))
-    score    = best.get("cv_best_overall_score", best.get("best_overall_score", 0))
-    cv_label = " (5-fold CV avg)" if use_cv else ""
+    roc    = best.get("roc_auc",            0)
+    recall = best.get("recall",             0)
+    pr_auc = best.get("pr_auc",             0)
+    score  = best.get("best_overall_score", 0)
 
     mins = int(total_runtime // 60)
     secs = int(total_runtime % 60)
     st.caption(f"⏱️ Total pipeline runtime: **{mins}m {secs}s**")
-    if use_cv:
-        _thr_display = best.get("best_threshold", 0.50)
-        st.info(
-            f"📊 Metrics below are **averaged over 5-fold cross-validation** on the full dataset, "
-            f"computed at the same decision threshold ({_thr_display:.2f}) used for predictions "
-            "— the closest estimate of how the model will perform on new unseen customers.",
-            icon=None,
-        )
 
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("🏆 Best Model",        best_name,
+    k1.metric("🏆 Best Model",      best_name,
               help="Selected by the highest Best Overall Score.")
-    k2.metric("Best Overall Score",   f"{score:.4f}",
-              help=f"0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC{cv_label}")
-    k3.metric("PR-AUC",               f"{pr_auc:.4f}",
-              help=f"Measures how well the model identifies customers who are likely to churn while keeping false alarms as low as possible. A higher PR-AUC means the model is better at finding real churn customers without incorrectly flagging too many loyal customers.{cv_label}")
-    k4.metric("Recall",               f"{recall:.4f}",
-              help=f"Measures how many customers who actually churned were correctly identified by the model. A higher Recall means fewer at-risk customers are missed, helping businesses take action before customers leave. Higher is better (range: 0-1).{cv_label}")
-    k5.metric("ROC-AUC",              f"{roc:.4f}",
-              help=f"Measures the model's overall ability to distinguish between customers who will churn and those who will stay. A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds.{cv_label}")
+    k2.metric("Best Overall Score", f"{score:.4f}",
+              help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC")
+    k3.metric("PR-AUC",             f"{pr_auc:.4f}",
+              help="Measures how well the model identifies customers who are likely to churn while keeping false alarms as low as possible. A higher PR-AUC means the model is better at finding real churn customers without incorrectly flagging too many loyal customers.")
+    k4.metric("Recall",             f"{recall:.4f}",
+              help="Measures how many customers who actually churned were correctly identified by the model. A higher Recall means fewer at-risk customers are missed, helping businesses take action before customers leave. Higher is better (range: 0-1).")
+    k5.metric("ROC-AUC",            f"{roc:.4f}",
+              help="Measures the model's overall ability to distinguish between customers who will churn and those who will stay. A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds.")
 
     st.markdown("#### Model Comparison  *(sorted by Best Overall Score)*")
     cmp_df = build_comparison_table(results)
