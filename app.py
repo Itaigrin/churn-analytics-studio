@@ -250,9 +250,6 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             bool_cols=profile["boolean_cols"],
         )
         profile["numeric_cols"] = profile["numeric_cols"] + new_feat_names
-        if new_feat_names:
-            st.info(f"✅ Created {len(new_feat_names)} candidate engineered features: "
-                    f"{', '.join(new_feat_names[:6])}")
 
         # Step 6: Train/Test Split
         upd(28, "Step 6 - Stratified 80/20 split (random_state=42)…")
@@ -282,13 +279,8 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
                                            if c not in set(discarded)]
             new_feat_names = selected_feat_names
             if selected_feat_names:
-                st.info(
-                    f"✅ Feature selection: **{len(selected_feat_names)}** of the candidate "
-                    f"features pass the mutual-information threshold — "
-                    f"{', '.join(selected_feat_names[:5])}"
-                )
-            else:
-                st.info("ℹ️ No engineered features passed the MI filter — using original features only.")
+                st.info(f"✅ Added engineered features: {', '.join(selected_feat_names)}")
+
 
         # Steps 8 & 9: Train + HPO
         model_list_str = ", ".join(selected_models)
