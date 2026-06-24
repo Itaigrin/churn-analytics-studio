@@ -212,8 +212,9 @@ def evaluate_model_cv(best_pipe, X_full, y_full, cv_folds: int = 5) -> dict:
             + SCORE_WEIGHT_RECALL * recall
             + SCORE_WEIGHT_ROC * roc_auc
         ),
-        "cv_avg_threshold": avg_threshold,
-        "cv_folds":         cv_folds,
+        "cv_avg_threshold":    avg_threshold,
+        "cv_fold_thresholds":  [round(t, 2) for t in thresholds],
+        "cv_folds":            cv_folds,
     }
 
 
