@@ -243,11 +243,15 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         upd(15, f"✅ {n:,} rows · {X_raw.shape[1]} features · churn rate {churn_rate:.1%}")
 
         # Step 4: Feature Engineering
-        upd(20, "Step 4 - Lightweight feature engineering (ratios, products, log-transforms)…")
-        X_raw, new_feat_names = engineer_features(X_raw, profile["numeric_cols"])
+        upd(20, "Step 4 - Feature engineering (ratios, products, MI-selected features)…")
+        X_raw, new_feat_names = engineer_features(
+            X_raw, profile["numeric_cols"],
+            cat_cols=profile["categorical_cols"],
+            bool_cols=profile["boolean_cols"],
+        )
         profile["numeric_cols"] = profile["numeric_cols"] + new_feat_names
         if new_feat_names:
-            st.info(f"✅ Created {len(new_feat_names)} engineered features: "
+            st.info(f"✅ Created {len(new_feat_names)} candidate engineered features: "
                     f"{', '.join(new_feat_names[:6])}")
 
         # Step 6: Train/Test Split
@@ -263,6 +267,28 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             f"✅ Train: **{len(X_train):,}** · Test: **{len(X_test):,}** "
             "(split BEFORE imputation/encoding → zero data leakage)"
         )
+
+        # Step 4b: MI-based feature selection (uses only X_train/y_train — no leakage)
+        if new_feat_names:
+            upd(30, "Step 4b - Selecting engineered features by mutual information (train set only)…")
+            from src.feature_engineering import select_engineered_features
+            selected_feat_names = select_engineered_features(X_train, y_train, new_feat_names)
+            discarded = [c for c in new_feat_names if c not in set(selected_feat_names)]
+            if discarded:
+                X_train = X_train.drop(columns=discarded, errors="ignore")
+                X_test  = X_test.drop(columns=discarded, errors="ignore")
+                X_raw   = X_raw.drop(columns=discarded, errors="ignore")
+                profile["numeric_cols"] = [c for c in profile["numeric_cols"]
+                                           if c not in set(discarded)]
+            new_feat_names = selected_feat_names
+            if selected_feat_names:
+                st.info(
+                    f"✅ Feature selection: **{len(selected_feat_names)}** of the candidate "
+                    f"features pass the mutual-information threshold — "
+                    f"{', '.join(selected_feat_names[:5])}"
+                )
+            else:
+                st.info("ℹ️ No engineered features passed the MI filter — using original features only.")
 
         # Steps 8 & 9: Train + HPO
         model_list_str = ", ".join(selected_models)
@@ -302,6 +328,30 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             cv_folds=5, threshold=opt_thr_for_cv,
         )
         results[best_name].update(cv_metrics)
+
+        # Optional: probability calibration (only if it improves Brier Score)
+        if st.session_state.get("calibrate_enabled", False):
+            upd(96, "Calibrating probabilities (comparing Brier Score before/after)…")
+            from src.evaluator import calibrate_model
+            cal_model, was_calibrated, brier_before, brier_after = calibrate_model(
+                results[best_name]["model"], X_train, y_train, X_test, y_test,
+            )
+            results[best_name]["calibrated"]    = was_calibrated
+            results[best_name]["brier_before"]  = brier_before
+            results[best_name]["brier_after"]   = brier_after
+            if was_calibrated:
+                results[best_name]["model"]  = cal_model
+                results[best_name]["y_prob"] = cal_model.predict_proba(X_test)[:, 1]
+                st.success(
+                    f"✅ Calibration improved Brier Score: "
+                    f"{brier_before:.4f} → {brier_after:.4f} (Δ {brier_after - brier_before:+.4f})"
+                )
+            else:
+                note = ""
+                if brier_before is not None and brier_after is not None:
+                    note = (f" — calibrated Brier ({brier_after:.4f}) did not improve "
+                            f"over original ({brier_before:.4f})")
+                st.info(f"ℹ️ Calibration not applied{note}. Original model kept.")
 
         total_runtime = time.time() - t_start
 
@@ -434,6 +484,9 @@ def _show_results():
     if not of_df.empty:
         st.dataframe(of_df, use_container_width=True, hide_index=True)
     st.divider()
+
+    # ── Probability Distribution ───────────────────────────────────────────────
+    _show_prob_distribution(best, st.session_state.get("y_test"))
 
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
     _show_professional_analysis(results, best_name, cmp_df)
@@ -660,6 +713,85 @@ def _show_guide():
     )
 
 
+def _show_prob_distribution(best: dict, y_test):
+    """Histogram of predicted churn probabilities split by actual label."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    y_prob = best.get("y_prob")
+    if y_prob is None or y_test is None:
+        return
+
+    threshold = float(best.get("best_threshold", 0.50))
+    y_arr     = np.asarray(y_test)
+
+    _sec("📊", "Probability Distribution")
+    st.caption(
+        "Predicted churn probabilities for the held-out test set. "
+        "Well-separated peaks indicate a model that is confident and accurate."
+    )
+
+    fig, ax = plt.subplots(figsize=(9, 3.5), facecolor="none")
+    ax.set_facecolor("none")
+
+    ax.hist(y_prob[y_arr == 0], bins=40, alpha=0.55,
+            color="#2196F3", label="Retained (actual)")
+    ax.hist(y_prob[y_arr == 1], bins=40, alpha=0.60,
+            color="#F44336", label="Churned (actual)")
+    ax.axvline(threshold, color="#FFC107", linewidth=2.5, linestyle="--",
+               label=f"Decision threshold ({threshold:.2f})")
+    ax.set_xlabel("Predicted churn probability", fontsize=10)
+    ax.set_ylabel("Customers", fontsize=10)
+    ax.legend(fontsize=9, framealpha=0.4)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout(pad=0.5)
+
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    # Calibration info if available
+    if best.get("calibrated") is not None:
+        b_before = best.get("brier_before")
+        b_after  = best.get("brier_after")
+        if best["calibrated"] and b_before is not None and b_after is not None:
+            st.caption(
+                f"🎯 **Probability calibration applied** — "
+                f"Brier Score: {b_before:.4f} → {b_after:.4f}"
+            )
+        elif b_before is not None and b_after is not None:
+            st.caption(
+                f"ℹ️ Calibration was tested but not applied "
+                f"(Brier: {b_before:.4f} original vs {b_after:.4f} calibrated)"
+            )
+
+    # Separation quality hint
+    if len(y_arr) > 0 and y_arr.sum() > 0:
+        mean_retained = float(y_prob[y_arr == 0].mean()) if (y_arr == 0).any() else 0.5
+        mean_churned  = float(y_prob[y_arr == 1].mean()) if (y_arr == 1).any() else 0.5
+        sep = mean_churned - mean_retained
+        if sep >= 0.25:
+            st.success(
+                f"✅ **Good separation** — churners average {mean_churned:.2f} vs "
+                f"retained {mean_retained:.2f} (Δ {sep:.2f}). "
+                "The model assigns meaningfully higher probabilities to actual churners."
+            )
+        elif sep >= 0.10:
+            st.info(
+                f"📊 **Moderate separation** — churners average {mean_churned:.2f} vs "
+                f"retained {mean_retained:.2f} (Δ {sep:.2f}). "
+                "Some overlap between the two groups."
+            )
+        else:
+            st.warning(
+                f"⚠️ **Low separation** — churners average {mean_churned:.2f} vs "
+                f"retained {mean_retained:.2f} (Δ {sep:.2f}). "
+                "The model struggles to assign clearly different probabilities to the two groups."
+            )
+
+    st.divider()
+
+
 def _predict_section():
     """New customer prediction UI."""
     from src.data_loader import load_uploaded_file
@@ -708,7 +840,11 @@ def _predict_section():
                 if _new_feat_names:
                     _orig_numeric = [c for c in profile["numeric_cols"]
                                      if c not in set(_new_feat_names)]
-                    df_new, _ = _eng(df_new, _orig_numeric)
+                    df_new, _ = _eng(
+                        df_new, _orig_numeric,
+                        cat_cols=profile.get("categorical_cols"),
+                        bool_cols=profile.get("boolean_cols"),
+                    )
 
                 from src.profiler import detect_id_column
                 auto_id_new = detect_id_column(df_new)
@@ -806,6 +942,44 @@ def _predict_section():
     m2.metric("Will Churn",       f"{churning:,}")
     m3.metric("Will Not Churn",   f"{not_churning:,}")
     m4.metric("% Churn",          f"{pct_churn:.1%}")
+
+    # ── Churn Rate Monitoring ─────────────────────────────────────────────────
+    training_churn_rate = st.session_state.get("churn_rate")
+    if training_churn_rate is not None:
+        diff_pp  = (pct_churn - training_churn_rate) * 100
+        abs_diff = abs(diff_pp)
+
+        st.markdown("#### Churn Rate Monitor")
+        cr1, cr2, cr3 = st.columns(3)
+        cr1.metric(
+            "Historical Churn Rate", f"{training_churn_rate:.1%}",
+            help="Churn rate observed in the training dataset.",
+        )
+        cr2.metric(
+            "Predicted Churn Rate", f"{pct_churn:.1%}",
+            help="Churn rate predicted for this uploaded batch.",
+        )
+        cr3.metric(
+            "Difference",
+            f"{diff_pp:+.1f} pp",
+            delta=f"{diff_pp:+.1f} pp",
+            delta_color="inverse",
+            help="Difference in percentage points between predicted and historical churn rates.",
+        )
+
+        if abs_diff > 10:
+            st.warning(
+                f"⚠️ **Distribution shift detected**: the predicted churn rate ({pct_churn:.1%}) "
+                f"differs from the historical training rate ({training_churn_rate:.1%}) by "
+                f"**{abs_diff:.1f} percentage points**. This customer batch may differ "
+                "significantly from the training population, or the decision threshold may need adjustment."
+            )
+        else:
+            st.success(
+                f"✅ Predicted churn rate ({pct_churn:.1%}) is consistent with the "
+                f"historical training rate ({training_churn_rate:.1%}) — "
+                f"difference: {abs_diff:.1f} pp."
+            )
 
     st.divider()
 
@@ -985,6 +1159,17 @@ with _tab_pipeline:
             f"Optuna trials: **{PIPELINE_CONFIG['optuna_trials']}**  ·  "
             f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
+
+        calibrate_enabled = st.checkbox(
+            "Enable probability calibration",
+            value=st.session_state.get("calibrate_enabled", False),
+            help=(
+                "After training, attempts to improve the raw probability outputs using "
+                "CalibratedClassifierCV. Only applies if it measurably improves the Brier Score "
+                "on the test set. Adds a few seconds to training time."
+            ),
+        )
+        st.session_state.calibrate_enabled = calibrate_enabled
 
         with st.expander("ℹ️ When to use each model", expanded=False):
             st.markdown(

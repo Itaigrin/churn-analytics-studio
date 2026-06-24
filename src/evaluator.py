@@ -256,6 +256,74 @@ def build_overfitting_report(results: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ── Probability Calibration ───────────────────────────────────────────────────
+
+def calibrate_model(model, X_train, y_train, X_test, y_test, random_state=42):
+    """
+    Attempt probability calibration on the best fitted pipeline.
+
+    Strategy:
+      - Split X_train 80/20 (stratified).
+      - Clone+refit the full pipeline on the 80% portion.
+      - Wrap with CalibratedClassifierCV(cv='prefit') — sigmoid and isotonic both tried.
+      - Compare Brier Scores on X_test; return calibrated model only if it improves by ≥ 0.001.
+
+    Returns
+    -------
+    (final_model, was_calibrated, brier_before, brier_after)
+    """
+    from sklearn.base import clone
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.metrics import brier_score_loss
+    from sklearn.model_selection import train_test_split as _tts
+
+    if not hasattr(model, "predict_proba"):
+        return model, False, None, None
+
+    try:
+        y_prob_before = model.predict_proba(X_test)[:, 1]
+        brier_before  = float(brier_score_loss(y_test, y_prob_before))
+    except Exception:
+        return model, False, None, None
+
+    try:
+        X_cal_fit, X_cal_val, y_cal_fit, y_cal_val = _tts(
+            X_train, y_train, test_size=0.20, random_state=random_state, stratify=y_train
+        )
+    except Exception:
+        try:
+            X_cal_fit, X_cal_val, y_cal_fit, y_cal_val = _tts(
+                X_train, y_train, test_size=0.20, random_state=random_state
+            )
+        except Exception:
+            return model, False, brier_before, None
+
+    best_cal_model  = None
+    best_brier_after = float("inf")
+
+    for method in ("sigmoid", "isotonic"):
+        try:
+            clf_clone = clone(model)
+            clf_clone.fit(X_cal_fit, y_cal_fit)
+            cal_clf = CalibratedClassifierCV(clf_clone, cv="prefit", method=method)
+            cal_clf.fit(X_cal_val, y_cal_val)
+            y_prob_after = cal_clf.predict_proba(X_test)[:, 1]
+            brier_after  = float(brier_score_loss(y_test, y_prob_after))
+            if brier_after < best_brier_after:
+                best_brier_after = brier_after
+                best_cal_model   = cal_clf
+        except Exception:
+            continue
+
+    if best_cal_model is None:
+        return model, False, brier_before, None
+
+    if best_brier_after < brier_before - 0.001:
+        return best_cal_model, True, brier_before, best_brier_after
+    else:
+        return model, False, brier_before, best_brier_after
+
+
 # ── Comparison table ──────────────────────────────────────────────────────────
 
 def build_comparison_table(results: dict) -> pd.DataFrame:
