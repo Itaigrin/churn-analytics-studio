@@ -686,9 +686,11 @@ def _predict_section():
             "Upload raw customer data - same columns as training, minus the target."
         )
 
-    # ── When a file is present: load & preprocess (cached by file identity) ───
+    # ── Load & preprocess when a new file name is detected ────────────────────
+    # Use name-only as key — HuggingFace can return inconsistent .size values
+    # across reruns, which would falsely trigger a cache miss if size is included.
     if new_file is not None:
-        file_key = f"{new_file.name}_{new_file.size}"
+        file_key = new_file.name
         if st.session_state.get("_pred_file_key") != file_key:
             try:
                 df_new = load_uploaded_file(new_file)
@@ -704,9 +706,9 @@ def _predict_section():
 
                 from src.profiler import detect_id_column
                 auto_id_new = detect_id_column(df_new)
-                known_cols = (profile["numeric_cols"]
-                              + profile["categorical_cols"]
-                              + profile["boolean_cols"])
+                known_cols  = (profile["numeric_cols"]
+                               + profile["categorical_cols"]
+                               + profile["boolean_cols"])
                 for col in known_cols:
                     if col not in df_new.columns:
                         df_new[col] = np.nan
@@ -715,23 +717,23 @@ def _predict_section():
                            if auto_id_new and auto_id_new in df_new.columns
                            else pd.Series(range(len(df_new)), name="row_id"))
 
-                # New file → clear previous prediction results
-                st.session_state._pred_file_key = file_key
-                st.session_state._pred_X_new    = X_new
-                st.session_state._pred_ids_new  = ids_new
-                st.session_state._pred_df_orig  = df_new_original.reset_index(drop=True)
-                st.session_state.pred_raw_probs = None
+                st.session_state._pred_file_key  = file_key
+                st.session_state._pred_X_new     = X_new
+                st.session_state._pred_ids_new   = ids_new
+                st.session_state._pred_df_orig   = df_new_original.reset_index(drop=True)
+                st.session_state._pred_triggered = False   # require fresh predict for new file
             except Exception as e:
                 st.error(f"Could not load file: {e}")
                 return
 
         st.success(f"✅ Loaded **{len(st.session_state._pred_X_new):,}** new customers")
 
-    # ── Nothing uploaded and no stored predictions → nothing to show ──────────
-    if new_file is None and st.session_state.get("pred_raw_probs") is None:
-        return
+    # ── Need at least preprocessed data to continue ───────────────────────────
+    X_new = st.session_state.get("_pred_X_new")
+    if X_new is None:
+        return   # nothing uploaded yet
 
-    # ── Threshold selector (always visible once a file was ever loaded) ───────
+    # ── Threshold selector ────────────────────────────────────────────────────
     auto_thr  = float(best.get("best_threshold", 0.50))
     thr_curve = best.get("threshold_curve")
 
@@ -749,7 +751,7 @@ def _predict_section():
             ),
         )
         if thr_curve is not None:
-            row = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
+            row      = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
             est_rec  = float(row["recall"].values[0])
             est_prec = float(row["precision"].values[0])
             st.caption(
@@ -765,34 +767,29 @@ def _predict_section():
         else:
             st.info("🎯 **High Precision** — only flags customers the model is very confident about. Fewer false alarms, may miss some churners.")
 
-    # ── Predict button (only when a file is loaded) ───────────────────────────
+    # ── Predict button (only shown when file is currently loaded) ─────────────
     if new_file is not None:
         if st.button("🔮 Predict Churn", type="primary", key="predict_btn"):
-            with st.spinner("Running predictions…"):
-                try:
-                    X_new   = st.session_state._pred_X_new
-                    ids_new = st.session_state._pred_ids_new
-                    raw_probs = best_pipe.predict_proba(X_new)[:, 1]
-                    st.session_state.pred_raw_probs  = raw_probs
-                    st.session_state.pred_ids        = ids_new
-                    st.session_state.pred_df_orig    = st.session_state._pred_df_orig
-                except Exception as e:
-                    st.error(f"Prediction failed: {e}")
-                    with st.expander("Traceback"):
-                        st.code(traceback.format_exc())
-                    return
+            st.session_state._pred_triggered = True
 
-    # ── Results (apply selected threshold to stored probabilities) ────────────
-    raw_probs = st.session_state.get("pred_raw_probs")
-    if raw_probs is None:
+    # ── Run prediction if triggered (always fresh from X_new — no stale probs) ─
+    # Prediction is fast (< 1 s for typical datasets) so re-running on every
+    # slider move is safe.  This avoids storing raw_probs in session_state,
+    # which was silently cleared on HuggingFace when .size changed between reruns.
+    if not st.session_state.get("_pred_triggered"):
         return
 
-    # File was cleared by Streamlit but results are still valid — show a note
-    if new_file is None:
-        st.caption("Showing results from previous prediction. Re-upload the file above to run new predictions.")
+    with st.spinner("Predicting…"):
+        try:
+            raw_probs = best_pipe.predict_proba(X_new)[:, 1]
+        except Exception as e:
+            st.error(f"Prediction failed: {e}")
+            with st.expander("Traceback"):
+                st.code(traceback.format_exc())
+            return
 
-    ids_display  = st.session_state.pred_ids
-    df_orig_disp = st.session_state.pred_df_orig
+    ids_display  = st.session_state._pred_ids_new
+    df_orig_disp = st.session_state._pred_df_orig
 
     churn_mask     = raw_probs >= selected_thr
     churn_pred_col = np.where(churn_mask, "Yes", "No")
@@ -800,6 +797,9 @@ def _predict_section():
     churning       = int(churn_mask.sum())
     not_churning   = total - churning
     pct_churn      = churning / max(total, 1)
+
+    if new_file is None:
+        st.caption("Showing results from previous file. Re-upload to run on a different file.")
 
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
