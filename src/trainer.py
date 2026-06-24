@@ -283,7 +283,7 @@ def _make_clf_es(name, params, spw, acw):
         bf = params.get("bagging_fraction", 1.0)
         return LGBMClassifier(
             n_estimators=_MAX_ITERS,
-            class_weight=acw,
+            class_weight="balanced" if acw else None,
             verbose=-1, random_state=RANDOM_STATE, n_jobs=-1,
             bagging_freq=5 if bf < 1.0 else 0,
             **params)
@@ -358,7 +358,7 @@ def _make_clf_final(name, params, n_estimators, spw, acw):
         bf = params.get("bagging_fraction", 1.0)
         return LGBMClassifier(
             n_estimators=n_estimators,
-            class_weight=acw,
+            class_weight="balanced" if acw else None,
             verbose=-1, random_state=RANDOM_STATE, n_jobs=-1,
             bagging_freq=5 if bf < 1.0 else 0,
             **params)
