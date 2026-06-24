@@ -244,12 +244,7 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
 
         # Step 4: Feature Engineering
         upd(20, "Step 4 - Lightweight feature engineering (ratios, products, log-transforms)…")
-        X_raw, new_feat_names = engineer_features(
-            X_raw,
-            profile["numeric_cols"],
-            cat_cols=profile.get("categorical_cols"),
-            bool_cols=profile.get("boolean_cols"),
-        )
+        X_raw, new_feat_names = engineer_features(X_raw, profile["numeric_cols"])
         profile["numeric_cols"] = profile["numeric_cols"] + new_feat_names
         if new_feat_names:
             st.info(f"✅ Created {len(new_feat_names)} engineered features: "
@@ -307,25 +302,6 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             cv_folds=5, threshold=opt_thr_for_cv,
         )
         results[best_name].update(cv_metrics)
-
-        # Optional probability calibration (best model only)
-        if st.session_state.get("calibrate_enabled", False):
-            upd(97, "Calibrating best model probabilities…")
-            from src.evaluator import calibrate_model, evaluate_model as _eval_model
-            _cal_model, _cal_method = calibrate_model(
-                results[best_name]["model"], X_train, y_train, RANDOM_STATE
-            )
-            if _cal_method is not None:
-                results[best_name]["model"] = _cal_model
-                results[best_name]["calibration_method"] = _cal_method
-                # Refresh probability-dependent metrics on test set
-                _cal_metrics = _eval_model(_cal_model, X_train, y_train, X_test, y_test)
-                for _k in ("y_prob", "y_pred", "roc_auc", "pr_auc", "recall",
-                           "precision", "f1", "best_threshold", "threshold_curve",
-                           "confusion_matrix", "recall_at_threshold",
-                           "precision_at_threshold", "train_roc_auc"):
-                    if _k in _cal_metrics:
-                        results[best_name][_k] = _cal_metrics[_k]
 
         total_runtime = time.time() - t_start
 
@@ -457,16 +433,6 @@ def _show_results():
     of_df = build_overfitting_report(results)
     if not of_df.empty:
         st.dataframe(of_df, use_container_width=True, hide_index=True)
-
-    cal_method = best.get("calibration_method")
-    if cal_method:
-        st.caption(f"🔧 Probability calibration applied: **{cal_method}** method.")
-
-    st.divider()
-
-    # ── Probability Distribution ──────────────────────────────────────────────
-    _show_prob_distribution(best, st.session_state.get("y_test"))
-
     st.divider()
 
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
@@ -532,70 +498,6 @@ def _explain_f1(f1: float) -> str:
         return (f"**{f1:.4f}** - Moderate balance. Either the model is missing some churners (low Recall) "
                 "or flagging too many loyal customers by mistake (low Precision), or both. "
                 "Consider reviewing the decision threshold or trying a different execution mode.")
-
-
-def _show_prob_distribution(best: dict, y_test):
-    """Histogram of predicted churn probabilities split by actual outcome."""
-    import matplotlib.pyplot as plt
-
-    y_prob = best.get("y_prob")
-    if y_prob is None or y_test is None:
-        return
-
-    y_true = np.asarray(y_test).ravel()
-    thr    = float(best.get("best_threshold", 0.50))
-
-    _sec("📊", "Probability Distribution")
-    st.caption(
-        "Predicted churn probabilities for customers who actually churned vs those who stayed. "
-        "More separation between the two groups = better model discrimination. "
-        "Heavy overlap means adjusting the threshold will shift who gets flagged but will not "
-        "dramatically improve Precision."
-    )
-
-    fig, ax = plt.subplots(figsize=(10, 3.5))
-    bins = np.linspace(0, 1, 31)
-
-    n_churn  = int((y_true == 1).sum())
-    n_retain = int((y_true == 0).sum())
-
-    ax.hist(y_prob[y_true == 1], bins=bins, alpha=0.65, color="#dc2626",
-            label=f"Churned  (n={n_churn:,})", density=True)
-    ax.hist(y_prob[y_true == 0], bins=bins, alpha=0.65, color="#2563eb",
-            label=f"Retained (n={n_retain:,})", density=True)
-    ax.axvline(thr, color="#d97706", linewidth=2, linestyle="--",
-               label=f"Decision threshold = {thr:.2f}")
-
-    ax.set_xlabel("Predicted Churn Probability")
-    ax.set_ylabel("Density")
-    ax.set_xlim(0, 1)
-    ax.legend(loc="upper right")
-    fig.tight_layout()
-
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
-
-    # Contextual interpretation based on median separation
-    if n_churn > 0 and n_retain > 0:
-        med_churn  = float(np.median(y_prob[y_true == 1]))
-        med_retain = float(np.median(y_prob[y_true == 0]))
-        sep = med_churn - med_retain
-        if sep < 0.15:
-            st.info(
-                "⚠️ The two distributions overlap significantly. "
-                "Raising the threshold will reduce false positives but will also miss more real churners. "
-                "Improving model features or adding more data may help create better separation."
-            )
-        elif sep < 0.30:
-            st.info(
-                "ℹ️ Moderate separation between churned and retained customers. "
-                "Adjusting the threshold meaningfully shifts the Recall / Precision tradeoff."
-            )
-        else:
-            st.success(
-                "✅ Good separation between churned and retained customers. "
-                "The model assigns clearly higher probabilities to actual churners."
-            )
 
 
 def _show_professional_analysis(results: dict, best_name: str, cmp_df):
@@ -806,12 +708,7 @@ def _predict_section():
                 if _new_feat_names:
                     _orig_numeric = [c for c in profile["numeric_cols"]
                                      if c not in set(_new_feat_names)]
-                    df_new, _ = _eng(
-                        df_new,
-                        _orig_numeric,
-                        cat_cols=profile.get("categorical_cols"),
-                        bool_cols=profile.get("boolean_cols"),
-                    )
+                    df_new, _ = _eng(df_new, _orig_numeric)
 
                 from src.profiler import detect_id_column
                 auto_id_new = detect_id_column(df_new)
@@ -909,35 +806,6 @@ def _predict_section():
     m2.metric("Will Churn",       f"{churning:,}")
     m3.metric("Will Not Churn",   f"{not_churning:,}")
     m4.metric("% Churn",          f"{pct_churn:.1%}")
-
-    # ── Churn Rate Comparison ─────────────────────────────────────────────────
-    historical_rate = st.session_state.get("churn_rate") or 0.0
-    if historical_rate > 0:
-        diff    = pct_churn - historical_rate
-        abs_diff = abs(diff)
-        st.markdown("#### Churn Rate Comparison")
-        r1, r2, r3 = st.columns(3)
-        r1.metric(
-            "Historical Churn Rate", f"{historical_rate:.1%}",
-            help="Actual churn rate observed in the training dataset.",
-        )
-        r2.metric(
-            "Predicted Churn Rate", f"{pct_churn:.1%}",
-            help="Fraction of uploaded customers predicted to churn at the current threshold.",
-        )
-        r3.metric(
-            "Difference", f"{diff:+.1%}",
-            help="Predicted rate minus historical rate (in percentage points).",
-        )
-        if abs_diff > 0.10:
-            st.warning(
-                f"⚠️ The predicted churn rate ({pct_churn:.1%}) differs from the historical rate "
-                f"({historical_rate:.1%}) by **{abs_diff:.1%}**. "
-                "This may reflect differences in the customer population, the current threshold "
-                "setting, data distribution shifts, or the quality of probability calibration. "
-                "Review the decision threshold and confirm the uploaded file represents your "
-                "current customer base."
-            )
 
     st.divider()
 
@@ -1129,19 +997,6 @@ with _tab_pipeline:
                 "| **CatBoost** | Dataset contains many categorical features (e.g. contract type, payment method); handles them natively without encoding | Slowest to train; less benefit if data is mostly numeric |\n"
                 "\n💡 **Not sure?** Leave 'All Models' selected - the app will train all five and automatically pick the best one."
             )
-        _cal_enabled = st.checkbox(
-            "🔧 Enable probability calibration",
-            value=False,
-            key="calibrate_checkbox",
-            help=(
-                "Applies CalibratedClassifierCV to the best model after training. "
-                "Improves the reliability of predicted churn probabilities — especially useful "
-                "when using the decision threshold to classify customers. "
-                "Uses sigmoid calibration (≤1K holdout samples) or isotonic (>1K). "
-                "Adds ~10–30 s to runtime."
-            ),
-        )
-        st.session_state["calibrate_enabled"] = _cal_enabled
     with btn_col:
         run = st.button("🚀 Run Pipeline", type="primary", use_container_width=True)
         _eta_low, _eta_high = _estimate_runtime(df, selected_models)

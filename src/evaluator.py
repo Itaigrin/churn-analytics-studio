@@ -256,44 +256,6 @@ def build_overfitting_report(results: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ── Probability calibration ──────────────────────────────────────────────────
-
-def calibrate_model(model, X_train, y_train, random_state: int = 42):
-    """
-    Calibrate a fitted Pipeline's probability outputs using a 20% holdout.
-
-    Splits X_train 80/20: refits a clone on the 80% then applies
-    CalibratedClassifierCV(cv='prefit') on the 20% calibration set.
-
-    Returns (calibrated_model, method_str) or (original_model, None) on failure.
-    """
-    from sklearn.calibration import CalibratedClassifierCV
-    from sklearn.model_selection import train_test_split
-    from sklearn.base import clone
-
-    if len(X_train) < 200:
-        return model, None
-
-    try:
-        X_fit, X_cal, y_fit, y_cal = train_test_split(
-            X_train, y_train,
-            test_size=0.20,
-            random_state=random_state,
-            stratify=y_train,
-        )
-        # isotonic needs enough data to avoid overfitting the calibration curve
-        method = "isotonic" if len(X_cal) >= 1000 else "sigmoid"
-
-        pipe_fit = clone(model)
-        pipe_fit.fit(X_fit, y_fit)
-
-        cal = CalibratedClassifierCV(pipe_fit, method=method, cv="prefit")
-        cal.fit(X_cal, y_cal)
-        return cal, method
-    except Exception:
-        return model, None
-
-
 # ── Comparison table ──────────────────────────────────────────────────────────
 
 def build_comparison_table(results: dict) -> pd.DataFrame:
