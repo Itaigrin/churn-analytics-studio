@@ -322,7 +322,7 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         results[best_name].update(cv_metrics)
 
         # Optional: probability calibration (only if it improves Brier Score)
-        if st.session_state.get("calibrate_enabled", False):
+        if True:
             upd(96, "Calibrating probabilities (comparing Brier Score before/after)…")
             from src.evaluator import calibrate_model
             cal_model, was_calibrated, brier_before, brier_after = calibrate_model(
@@ -1044,17 +1044,6 @@ with _tab_pipeline:
             f"Optuna trials: **{PIPELINE_CONFIG['optuna_trials']}**  ·  "
             f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
-
-        calibrate_enabled = st.checkbox(
-            "Enable probability calibration",
-            value=st.session_state.get("calibrate_enabled", False),
-            help=(
-                "After training, attempts to improve the raw probability outputs using "
-                "CalibratedClassifierCV. Only applies if it measurably improves the Brier Score "
-                "on the test set. Adds a few seconds to training time."
-            ),
-        )
-        st.session_state.calibrate_enabled = calibrate_enabled
 
         with st.expander("ℹ️ When to use each model", expanded=False):
             st.markdown(
