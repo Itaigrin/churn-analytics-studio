@@ -205,6 +205,10 @@ def _profile_column(s: pd.Series) -> dict:
         unique_vals = set(non_null.unique())
         if unique_vals <= {0, 1, 0.0, 1.0, True, False}:
             info["detected_type"] = "boolean"
+        elif info["n_unique"] == n and n >= 100:
+            # All-unique numeric → almost certainly a row/customer ID, not a feature
+            info["is_id_like"] = True
+            info["detected_type"] = "identifier"
         else:
             info["detected_type"] = "numeric"
         return info

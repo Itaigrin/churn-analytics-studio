@@ -53,7 +53,9 @@ SCORE_WEIGHT_ROC    = 0.20
 ID_HINTS = [
     "customerid", "customer_id", "userid", "user_id", "client_id", "clientid",
     "account_id", "accountid", "cust_id", "member_id", "employeeid",
-    "employee_id", "empid", "custno", "custnum",
+    "employee_id", "empid", "custno", "custnum", "clientnum", "client_num",
+    "rownum", "row_num", "rowno", "row_no", "rownumber", "row_number",
+    "id", "idx", "index",
 ]
 CHURN_HINTS = [
     "churn", "is_churned", "churned", "left_company", "attrition",

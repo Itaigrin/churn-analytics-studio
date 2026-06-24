@@ -148,6 +148,7 @@ def pick_best_model(results: dict, **_kwargs) -> str:
         for name, r in results.items():
             if r.get("model") is not None:
                 return name
+        # All models failed — return first key; caller must guard against model=None
         return next(iter(results))
 
     best_name = max(valid, key=lambda n: valid[n].get("best_overall_score", 0.0))

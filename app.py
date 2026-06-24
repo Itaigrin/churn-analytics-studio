@@ -305,6 +305,21 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         results   = evaluate_all(results, X_train, y_train, X_test, y_test)
         best_name = pick_best_model(results, actual_positives=int(y_test.sum()))
 
+        # Guard: if all models failed, surface the errors clearly
+        if results[best_name].get("model") is None:
+            failed_msgs = []
+            for name, r in results.items():
+                if r.get("error"):
+                    failed_msgs.append(f"**{name}**: {r['error'][:200]}")
+            err_detail = "\n\n".join(failed_msgs) if failed_msgs else "No details available."
+            st.error(
+                "All models failed to train. Check that your dataset has valid numeric "
+                "and categorical columns and that the target column is binary (0/1 or Yes/No).\n\n"
+                + err_detail
+            )
+            prog_container.empty()
+            return
+
         # Step 11: 5-fold CV on full dataset — reliable metrics + averaged threshold
         upd(90, "Step 11 - Cross-validation (5 folds) on full dataset for reliable metrics…")
         from src.evaluator import evaluate_model_cv
