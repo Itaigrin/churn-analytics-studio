@@ -1008,7 +1008,7 @@ with _tab_pipeline:
     auto_target = detect_target_column(df, exclude=[auto_id] if auto_id else [])
     cols_list   = df.columns.tolist()
 
-    ca, cb, cc = st.columns(3)
+    ca, cb, cc1, cc2, cc3 = st.columns([3, 3, 1.2, 1.2, 2])
     with ca:
         id_col = st.selectbox(
             "Customer ID column",
@@ -1030,9 +1030,13 @@ with _tab_pipeline:
         if auto_target:
             st.caption(f"Auto-detected: **{auto_target}**")
 
-    with cc:
-        st.metric("Rows",    f"{len(df):,}")
+    with cc1:
+        st.metric("Rows", f"{len(df):,}")
+
+    with cc2:
         st.metric("Columns", df.shape[1])
+
+    with cc3:
         try:
             _target_series = df[target_col].astype(str).str.strip().str.lower()
             _churn_mask    = _target_series.isin(["1", "yes", "true", "churn", "1.0"])
@@ -1040,7 +1044,7 @@ with _tab_pipeline:
             _pct_churn     = _n_churn / len(df) if len(df) > 0 else 0
             st.metric(
                 "Churned Customers",
-                f"{_n_churn:,}  ({_pct_churn:.1%})",
+                f"{_n_churn:,} ({_pct_churn:.1%})",
                 help="Number and percentage of customers who churned in the historical data.",
             )
         except Exception:
