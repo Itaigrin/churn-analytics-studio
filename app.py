@@ -687,6 +687,24 @@ def _predict_section():
             "Upload raw customer data - same columns as training, minus the target."
         )
 
+    # ── DEBUG panel (temporary) ──────────────────────────────────────────────
+    with st.expander("🔍 Debug Info (תסגור אחרי האבחון)", expanded=False):
+        _dbg_file = f"{new_file.name} | size={new_file.size}" if new_file is not None else "None"
+        _dbg_key  = st.session_state.get("_pred_file_key", "NOT SET")
+        _dbg_probs = ("None" if st.session_state.get("pred_raw_probs") is None
+                      else f"array({len(st.session_state.pred_raw_probs)} values)")
+        _dbg_xnew = ("None" if st.session_state.get("_pred_X_new") is None
+                     else f"DataFrame({len(st.session_state._pred_X_new)} rows)")
+        st.markdown(f"""
+| Key | Value |
+|-----|-------|
+| `new_file` | `{_dbg_file}` |
+| `_pred_file_key` (saved) | `{_dbg_key}` |
+| `pred_raw_probs` | `{_dbg_probs}` |
+| `_pred_X_new` | `{_dbg_xnew}` |
+""")
+    # ─────────────────────────────────────────────────────────────────────────
+
     if new_file is None:
         st.session_state.pred_raw_probs = None
         return
