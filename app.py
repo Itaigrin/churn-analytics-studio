@@ -664,15 +664,15 @@ def _predict_section():
     """New customer prediction UI."""
     from src.data_loader import load_uploaded_file
     from src.pipeline_builder import raw_clean
+    from src.predictor import predict_new_customers
+    from src.viz import plot_prediction_distribution, plot_risk_breakdown
     from src.utils import to_csv_bytes
 
     profile   = st.session_state.profile
     results   = st.session_state.results
     best_name = st.session_state.best_model_name
     best_pipe = results[best_name]["model"]
-    best      = results[best_name]
 
-    # ── File upload ───────────────────────────────────────────────────────────
     c1, c2 = st.columns([2, 1])
     with c1:
         new_file = st.file_uploader(
@@ -686,143 +686,88 @@ def _predict_section():
             "Upload raw customer data - same columns as training, minus the target."
         )
 
-    # ── Load & preprocess when a new file name is detected ────────────────────
-    # Use name-only as key — HuggingFace can return inconsistent .size values
-    # across reruns, which would falsely trigger a cache miss if size is included.
-    if new_file is not None:
-        file_key = new_file.name
-        if st.session_state.get("_pred_file_key") != file_key:
-            try:
-                df_new = load_uploaded_file(new_file)
-                df_new_original = df_new.copy()
-                df_new = raw_clean(df_new)
-
-                from src.feature_engineering import engineer_features as _eng
-                _new_feat_names = st.session_state.get("new_feature_names") or []
-                if _new_feat_names:
-                    _orig_numeric = [c for c in profile["numeric_cols"]
-                                     if c not in set(_new_feat_names)]
-                    df_new, _ = _eng(df_new, _orig_numeric)
-
-                from src.profiler import detect_id_column
-                auto_id_new = detect_id_column(df_new)
-                known_cols  = (profile["numeric_cols"]
-                               + profile["categorical_cols"]
-                               + profile["boolean_cols"])
-                for col in known_cols:
-                    if col not in df_new.columns:
-                        df_new[col] = np.nan
-                X_new   = df_new[[c for c in known_cols if c in df_new.columns]].copy()
-                ids_new = (df_new[auto_id_new]
-                           if auto_id_new and auto_id_new in df_new.columns
-                           else pd.Series(range(len(df_new)), name="row_id"))
-
-                st.session_state._pred_file_key  = file_key
-                st.session_state._pred_X_new     = X_new
-                st.session_state._pred_ids_new   = ids_new
-                st.session_state._pred_df_orig   = df_new_original.reset_index(drop=True)
-                st.session_state._pred_triggered = False   # require fresh predict for new file
-            except Exception as e:
-                st.error(f"Could not load file: {e}")
-                return
-
-        st.success(f"✅ Loaded **{len(st.session_state._pred_X_new):,}** new customers")
-
-    # ── Need at least preprocessed data to continue ───────────────────────────
-    X_new = st.session_state.get("_pred_X_new")
-    if X_new is None:
-        return   # nothing uploaded yet
-
-    # ── Threshold selector ────────────────────────────────────────────────────
-    auto_thr  = float(best.get("best_threshold", 0.50))
-    thr_curve = best.get("threshold_curve")
-
-    st.markdown("#### Sensitivity Setting")
-    sl_col, hint_col = st.columns([3, 2])
-    with sl_col:
-        selected_thr = st.slider(
-            "Decision Threshold",
-            min_value=0.20, max_value=0.80,
-            value=auto_thr, step=0.05,
-            help=(
-                "Controls the trade-off between catching churners and avoiding false alarms.\n\n"
-                "Lower → more customers flagged as churners (higher Recall, more false alarms).\n\n"
-                "Higher → only high-confidence predictions flagged (fewer false alarms, may miss some)."
-            ),
-        )
-        if thr_curve is not None:
-            row      = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
-            est_rec  = float(row["recall"].values[0])
-            est_prec = float(row["precision"].values[0])
-            st.caption(
-                f"At threshold **{selected_thr:.2f}** — "
-                f"estimated Recall ≈ **{est_rec:.0%}** · "
-                f"estimated Precision ≈ **{est_prec:.0%}**"
-            )
-    with hint_col:
-        if selected_thr <= 0.40:
-            st.info("🔍 **High Recall** — catches the most churners, but also flags some loyal customers as at-risk.")
-        elif selected_thr <= 0.55:
-            st.info("⚖️ **Balanced** — best F1 balance between catching churners and avoiding false alarms.")
-        else:
-            st.info("🎯 **High Precision** — only flags customers the model is very confident about. Fewer false alarms, may miss some churners.")
-
-    # ── Predict button (only shown when file is currently loaded) ─────────────
-    if new_file is not None:
-        if st.button("🔮 Predict Churn", type="primary", key="predict_btn"):
-            st.session_state._pred_triggered = True
-
-    # ── Run prediction if triggered (always fresh from X_new — no stale probs) ─
-    # Prediction is fast (< 1 s for typical datasets) so re-running on every
-    # slider move is safe.  This avoids storing raw_probs in session_state,
-    # which was silently cleared on HuggingFace when .size changed between reruns.
-    if not st.session_state.get("_pred_triggered"):
+    if new_file is None:
         return
 
-    with st.spinner("Predicting…"):
+    try:
+        df_new = load_uploaded_file(new_file)
+        df_new_original = df_new.copy()
+        df_new = raw_clean(df_new)
+
+        # Apply the same feature engineering used during training so the model
+        # receives actual computed values (not median-imputed NaNs) for engineered cols.
+        from src.feature_engineering import engineer_features as _eng
+        _new_feat_names = st.session_state.get("new_feature_names") or []
+        if _new_feat_names:
+            _orig_numeric = [c for c in profile["numeric_cols"]
+                             if c not in set(_new_feat_names)]
+            df_new, _ = _eng(df_new, _orig_numeric)
+
+        st.success(f"✅ Loaded **{len(df_new):,}** new customers")
+    except Exception as e:
+        st.error(f"Could not load file: {e}")
+        return
+
+    if not st.button("🔮 Predict Churn", type="primary", key="predict_btn"):
+        return
+
+    with st.spinner("Running predictions…"):
         try:
-            raw_probs = best_pipe.predict_proba(X_new)[:, 1]
+            from src.profiler import detect_id_column
+            auto_id_new = detect_id_column(df_new)
+
+            known_cols = (
+                profile["numeric_cols"]
+                + profile["categorical_cols"]
+                + profile["boolean_cols"]
+            )
+            for col in known_cols:
+                if col not in df_new.columns:
+                    df_new[col] = np.nan
+
+            X_new = df_new[[c for c in known_cols if c in df_new.columns]].copy()
+
+            if auto_id_new and auto_id_new in df_new.columns:
+                ids_new = df_new[auto_id_new]
+            else:
+                ids_new = pd.Series(range(len(df_new)), name="row_id")
+
+            opt_thr = results[best_name].get("best_threshold", 0.50)
+            preds = predict_new_customers(best_pipe, X_new, ids_new, threshold=opt_thr)
+            st.session_state.predictions = preds
+            st.session_state.df_new_original = df_new_original.reset_index(drop=True)
+
         except Exception as e:
             st.error(f"Prediction failed: {e}")
             with st.expander("Traceback"):
                 st.code(traceback.format_exc())
             return
 
-    ids_display  = st.session_state._pred_ids_new
-    df_orig_disp = st.session_state._pred_df_orig
-
-    churn_mask     = raw_probs >= selected_thr
-    churn_pred_col = np.where(churn_mask, "Yes", "No")
-    total          = len(raw_probs)
-    churning       = int(churn_mask.sum())
-    not_churning   = total - churning
-    pct_churn      = churning / max(total, 1)
-
-    if new_file is None:
-        st.caption("Showing results from previous file. Re-upload to run on a different file.")
+    preds        = st.session_state.predictions
+    df_new_orig  = st.session_state.get("df_new_original", None)
+    total        = len(preds)
+    churning     = int((preds["churn_prediction"] == "Yes").sum())
+    not_churning = total - churning
+    pct_churn    = churning / max(total, 1)
 
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Customers",  f"{total:,}")
-    m2.metric("Will Churn",       f"{churning:,}")
-    m3.metric("Will Not Churn",   f"{not_churning:,}")
-    m4.metric("% Churn",          f"{pct_churn:.1%}")
+    m1.metric("Total Customers", f"{total:,}")
+    m2.metric("Will Churn",      f"{churning:,}")
+    m3.metric("Will Not Churn",  f"{not_churning:,}")
+    m4.metric("% Churn",         f"{pct_churn:.1%}")
 
     st.divider()
 
-    if df_orig_disp is not None:
-        display_df = df_orig_disp.copy()
-        display_df["Churn Prediction"]  = churn_pred_col
-        display_df["Churn Probability"] = np.round(raw_probs, 4)
+    if df_new_orig is not None:
+        display_df = df_new_orig.copy()
+        display_df["Churn Prediction"] = preds["churn_prediction"].values
     else:
-        display_df = pd.DataFrame({
-            "customer_id":       ids_display.values,
-            "churn_prediction":  churn_pred_col,
-            "churn_probability": np.round(raw_probs, 4),
-        })
+        display_df = preds[["customer_id", "churn_prediction", "churn_probability"]].copy()
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+    from src.utils import to_csv_bytes
     st.download_button(
         "⬇️ Download Predictions CSV",
         data=to_csv_bytes(display_df),
