@@ -683,7 +683,7 @@ def _show_guide():
             "CatBoost",
             "Gradient boosting that handles categories natively.",
             "Developed by Yandex. Excels when your data has many categorical columns "
-            "(like contract type, payment method, region). "
+            "(like product category, region, plan type). "
             "It handles them natively without needing manual encoding - it figures that out itself. "
             "Often the strongest performer on real-world business datasets.",
         ),
@@ -1179,7 +1179,7 @@ with _tab_pipeline:
                 "| **Random Forest** | General-purpose - works well on most churn datasets; handles missing values and mixed feature types gracefully | Can be slow on very large datasets (>200K rows) |\n"
                 "| **XGBoost** | Medium-to-large datasets with many features; strong on tabular data with feature interactions | Needs more tuning; sensitive to imbalanced data without proper class weights |\n"
                 "| **LightGBM** | Large datasets (>50K rows); fastest training time of the boosting models | May overfit on small datasets (<1K rows) |\n"
-                "| **CatBoost** | Dataset contains many categorical features (e.g. contract type, payment method); handles them natively without encoding | Slowest to train; less benefit if data is mostly numeric |\n"
+                "| **CatBoost** | Dataset contains many categorical features (e.g. product category, region, plan type); handles them natively without encoding | Slowest to train; less benefit if data is mostly numeric |\n"
                 "\n💡 **Not sure?** Leave 'All Models' selected - the app will train all five and automatically pick the best one."
             )
     with btn_col:

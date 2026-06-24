@@ -103,21 +103,6 @@ def raw_clean(df: pd.DataFrame) -> pd.DataFrame:
     # Standardise column names
     df.columns = [c.strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
 
-    # Collapse "No phone service" / "No internet service" → "No"
-    for col in df.select_dtypes(include=["object", "category"]).columns:
-        vals = df[col].dropna().unique()
-        has_yes        = any(str(v).strip().lower() == "yes" for v in vals)
-        has_no_variant = any(
-            str(v).strip().lower().startswith("no ") and str(v).strip().lower() != "no"
-            for v in vals
-        )
-        if has_yes and has_no_variant:
-            df[col] = df[col].apply(
-                lambda v: "No"
-                if isinstance(v, str) and v.strip().lower().startswith("no ")
-                else v
-            )
-
     # Convert object columns that are really numeric (e.g. TotalCharges stored as " ")
     for col in df.select_dtypes(include=["object"]).columns:
         cleaned   = df[col].astype(str).str.strip().str.replace(",", "", regex=False)
