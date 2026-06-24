@@ -688,7 +688,7 @@ def _predict_section():
         )
 
     # ── DEBUG panel (temporary) ──────────────────────────────────────────────
-    with st.expander("🔍 Debug Info (תסגור אחרי האבחון)", expanded=False):
+    with st.expander("🔍 Debug Info (תסגור אחרי האבחון)", expanded=True):
         _dbg_file = f"{new_file.name} | size={new_file.size}" if new_file is not None else "None"
         _dbg_key  = st.session_state.get("_pred_file_key", "NOT SET")
         _dbg_probs = ("None" if st.session_state.get("pred_raw_probs") is None
