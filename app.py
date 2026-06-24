@@ -790,25 +790,27 @@ def _predict_section():
             )
 
         # ── Why this threshold? ───────────────────────────────────────────────
-        fold_thrs = best.get("cv_fold_thresholds")
+        fold_thrs = best.get("cv_fold_thresholds") or []
         cv_folds  = best.get("cv_folds", 5)
-        if fold_thrs:
-            folds_str = "  ·  ".join(f"{t:.2f}" for t in fold_thrs)
-            with st.expander(f"Why {auto_thr:.2f}?"):
-                st.markdown(
-                    f"The threshold **{auto_thr:.2f}** was chosen automatically by "
-                    f"**{cv_folds}-fold cross-validation**:\n\n"
-                    f"In each fold, the model tested thresholds from 0.20 to 0.70 "
-                    f"and selected the one that maximised **F1 score** — the best balance "
-                    f"between catching churners (Recall) and avoiding false alarms (Precision).\n\n"
-                    f"**Per-fold optimal thresholds:**\n\n"
-                    + "  ".join(
-                        f"`Fold {i+1}: {t:.2f}`" for i, t in enumerate(fold_thrs)
-                    )
-                    + f"\n\n**Average → {auto_thr:.2f}**\n\n"
-                    "Averaging across folds makes the threshold more robust than picking "
-                    "from a single test set, which might have been unusually easy or hard."
+        with st.expander(f"Why {auto_thr:.2f}?"):
+            fold_detail = ""
+            if fold_thrs:
+                fold_detail = (
+                    "\n\n**Per-fold optimal thresholds:**\n\n"
+                    + "  ".join(f"`Fold {i+1}: {t:.2f}`" for i, t in enumerate(fold_thrs))
+                    + f"\n\n**Average → {auto_thr:.2f}**"
                 )
+            st.markdown(
+                f"The threshold **{auto_thr:.2f}** was chosen automatically by "
+                f"**{cv_folds}-fold cross-validation**.\n\n"
+                f"In each fold, the model tested every threshold from 0.20 to 0.70 (step 0.02) "
+                f"and selected the one that maximised **F1 score** — the best balance "
+                f"between catching churners (Recall) and avoiding false alarms (Precision).\n\n"
+                f"The final threshold is the **average across all {cv_folds} folds**, "
+                f"making it more robust than picking from a single test set "
+                f"that might have been unusually easy or hard."
+                + fold_detail
+            )
 
     with hint_col:
         if selected_thr <= 0.40:
