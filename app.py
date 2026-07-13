@@ -557,9 +557,9 @@ def _show_professional_analysis(results: dict, best_name: str, cmp_df):
     )
 
     best   = valid[best_name]
-    roc    = best.get("roc_auc", 0)
-    rec    = best.get("recall",  0)
-    pr_auc = best.get("pr_auc",  0)
+    roc    = best.get("cv_roc_auc",  best.get("roc_auc", 0))
+    rec    = best.get("cv_recall",   best.get("recall",  0))
+    pr_auc = best.get("cv_pr_auc",   best.get("pr_auc",  0))
 
     st.markdown(f"### 🏆 {best_name}")
     st.markdown(f"**PR-AUC:** {_explain_pr_auc(pr_auc)}")
