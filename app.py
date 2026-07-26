@@ -984,23 +984,36 @@ with _tab_pipeline:
         )
 
     if hist_file is not None:
-        _prog = st.progress(0, text="Loading…")
         try:
-            from src.data_loader import load_uploaded_file
-            _prog.progress(5, text="Detecting delimiter & encoding…")
-            _df = load_uploaded_file(hist_file)
-            _prog.progress(10, text="Done ✅")
-            if st.session_state.df is None or len(st.session_state.df) != len(_df):
-                for _k in ["profile","X_raw","y","ids","X_train","X_test","y_train","y_test",
-                           "new_feature_names","results","best_model_name","predictions","training_done"]:
-                    st.session_state[_k] = None
-            st.session_state.df = _df
-            time.sleep(0.2)
-            _prog.empty()
-        except Exception as _e:
-            _prog.empty()
-            st.error(f"Could not load file: {_e}")
-            st.session_state.df = None
+            _file_bytes = hist_file.read()
+            _file_hash  = hash(_file_bytes)
+        except Exception:
+            _file_bytes = None
+            _file_hash  = None
+
+        # Only reload if this is a genuinely new file (different content hash)
+        if _file_bytes and _file_hash != st.session_state.get("_df_hash"):
+            _prog = st.progress(0, text="Loading…")
+            try:
+                import io as _io
+                from src.data_loader import load_uploaded_file
+                _prog.progress(5, text="Detecting delimiter & encoding…")
+                _bio = _io.BytesIO(_file_bytes)
+                _bio.name = hist_file.name
+                _df = load_uploaded_file(_bio)
+                _prog.progress(10, text="Done ✅")
+                if st.session_state.df is None or len(st.session_state.df) != len(_df):
+                    for _k in ["profile","X_raw","y","ids","X_train","X_test","y_train","y_test",
+                               "new_feature_names","results","best_model_name","predictions","training_done"]:
+                        st.session_state[_k] = None
+                st.session_state.df      = _df
+                st.session_state._df_hash = _file_hash
+                time.sleep(0.2)
+                _prog.empty()
+            except Exception as _e:
+                _prog.empty()
+                st.error(f"Could not load file: {_e}")
+                # Do NOT clear st.session_state.df — keep the last valid DataFrame
 
     df = st.session_state.df
 
