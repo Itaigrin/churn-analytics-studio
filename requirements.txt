@@ -1,14 +1,30 @@
-streamlit>=1.35.0
-pandas>=2.0.0
-numpy>=1.26.0
-scikit-learn>=1.4.0
-plotly>=5.18.0
-openpyxl>=3.1.0
-xlrd>=2.0.1
-shap>=0.45.0
-xgboost>=2.0.0
-lightgbm>=4.0.0
-catboost>=1.2.0
-optuna>=3.5.0
-imbalanced-learn>=0.12.0
-joblib>=1.3.0
+# Pinned deliberately.
+#
+# These were previously all ">=", which meant every HuggingFace rebuild pulled
+# whatever versions were newest that day. The app could - and did - break with
+# no code change on our side: a newer numpy/scikit-learn shifted OpenMP
+# behaviour and training started dying with SIGSEGV (exit code 139).
+#
+# Exact pins make the deployed runtime reproducible. This set was verified
+# end-to-end before pinning: every module imports, all five models train, and
+# CV + calibration complete on a real 8k-row dataset.
+#
+# When upgrading, change one line at a time and re-run a full pipeline.
+
+streamlit==1.60.0
+pandas==3.0.5
+numpy==2.4.6
+scikit-learn==1.9.0
+scipy==1.18.0
+joblib==1.5.3
+
+plotly==6.9.0
+openpyxl==3.1.5
+xlrd==2.0.2
+
+xgboost==3.3.0
+lightgbm==4.7.0
+catboost==1.2.10
+optuna==4.9.0
+shap==0.52.0
+imbalanced-learn==0.14.2
