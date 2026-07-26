@@ -19,6 +19,14 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
+# Prevent SIGSEGV (exit code 139) on cloud: OpenMP + fork = heap corruption
+# Must be set before numpy / lightgbm / xgboost are imported
+_ON_CLOUD = os.path.exists("/mount/src")
+if _ON_CLOUD:
+    for _env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                 "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(_env, "1")
+
 import warnings
 warnings.filterwarnings("ignore")
 

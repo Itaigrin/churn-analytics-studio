@@ -10,9 +10,13 @@ All computations use the FITTED pipeline — no risk of data leakage.
 
 from __future__ import annotations
 
+import os
 import warnings
 
 import numpy as np
+
+_ON_CLOUD = os.path.exists("/mount/src")
+_N_JOBS   = 1 if _ON_CLOUD else -1
 import pandas as pd
 from sklearn.inspection import permutation_importance
 from sklearn.pipeline import Pipeline
@@ -84,7 +88,7 @@ def get_permutation_importance(
             n_repeats=n_repeats,
             random_state=RANDOM_STATE,
             scoring="roc_auc",
-            n_jobs=-1,
+            n_jobs=_N_JOBS,
         )
         # Feature names are the INPUT features (before the preprocessor)
         if hasattr(X_s, "columns"):

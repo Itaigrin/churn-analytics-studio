@@ -13,6 +13,7 @@ All preprocessing is fitted INSIDE each fold → zero data leakage.
 
 from __future__ import annotations
 
+import os
 import time
 import warnings
 from typing import Callable, Optional
@@ -30,6 +31,8 @@ from .pipeline_builder import build_preprocessor
 
 warnings.filterwarnings("ignore")
 
+_ON_CLOUD       = os.path.exists("/mount/src")
+_N_JOBS         = 1 if _ON_CLOUD else -1   # n_jobs=-1 + OpenMP = SIGSEGV on cloud
 _CV_FOLDS       = 5
 _EARLY_STOP_RDS = 30
 _MAX_ITERS      = 500
@@ -122,7 +125,7 @@ def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
                                random_state=RANDOM_STATE)
         return float(cross_val_score(pipe, X_train, y_train,
                                      cv=cv, scoring="roc_auc",
-                                     n_jobs=-1).mean())
+                                     n_jobs=_N_JOBS).mean())
 
     study = _new_study()
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False,
@@ -256,12 +259,12 @@ def _make_clf(name, params):
         from sklearn.linear_model import LogisticRegression
         return LogisticRegression(
             max_iter=1000, random_state=RANDOM_STATE,
-            solver="lbfgs", penalty="l2", n_jobs=-1, **params)
+            solver="lbfgs", penalty="l2", n_jobs=_N_JOBS, **params)
 
     if name == "Random Forest":
         from sklearn.ensemble import RandomForestClassifier
         return RandomForestClassifier(
-            n_estimators=300, random_state=RANDOM_STATE, n_jobs=-1, **params)
+            n_estimators=300, random_state=RANDOM_STATE, n_jobs=_N_JOBS, **params)
 
     return None
 
@@ -275,7 +278,7 @@ def _make_clf_es(name, params, spw, acw):
             early_stopping_rounds=_EARLY_STOP_RDS,
             eval_metric="auc",
             scale_pos_weight=spw,
-            verbosity=0, random_state=RANDOM_STATE, n_jobs=-1,
+            verbosity=0, random_state=RANDOM_STATE, n_jobs=_N_JOBS,
             **params)
 
     if name == "LightGBM":
@@ -284,7 +287,7 @@ def _make_clf_es(name, params, spw, acw):
         return LGBMClassifier(
             n_estimators=_MAX_ITERS,
             class_weight="balanced" if acw else None,
-            verbose=-1, random_state=RANDOM_STATE, n_jobs=-1,
+            verbose=-1, random_state=RANDOM_STATE, n_jobs=_N_JOBS,
             bagging_freq=5 if bf < 1.0 else 0,
             **params)
 
@@ -350,7 +353,7 @@ def _make_clf_final(name, params, n_estimators, spw, acw):
             n_estimators=n_estimators,
             scale_pos_weight=spw,
             eval_metric="logloss",
-            verbosity=0, random_state=RANDOM_STATE, n_jobs=-1,
+            verbosity=0, random_state=RANDOM_STATE, n_jobs=_N_JOBS,
             **params)
 
     if name == "LightGBM":
@@ -359,7 +362,7 @@ def _make_clf_final(name, params, n_estimators, spw, acw):
         return LGBMClassifier(
             n_estimators=n_estimators,
             class_weight="balanced" if acw else None,
-            verbose=-1, random_state=RANDOM_STATE, n_jobs=-1,
+            verbose=-1, random_state=RANDOM_STATE, n_jobs=_N_JOBS,
             bagging_freq=5 if bf < 1.0 else 0,
             **params)
 
