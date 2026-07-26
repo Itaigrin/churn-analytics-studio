@@ -1125,13 +1125,6 @@ with _tab_pipeline:
             f"Optuna trials: **{PIPELINE_CONFIG['optuna_trials']}**  ·  "
             f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
-        if ON_CLOUD:
-            st.caption(
-                "☁️ This hosted demo runs on a small shared CPU, so the "
-                "hyperparameter search uses a reduced budget to stay responsive. "
-                "For the full search (and to keep your data on your own machine), "
-                "run the app locally — see the README."
-            )
 
         with st.expander("ℹ️ When to use each model", expanded=False):
             st.markdown(

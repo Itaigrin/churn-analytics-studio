@@ -28,12 +28,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from .runtime_env import ON_CLOUD
-
-# mutual_info_classif runs a KD-tree nearest-neighbour search per feature.
-# That is seconds on a normal machine but minutes on a single shared cloud
-# vCPU, so the hosted demo ranks features on a smaller stratified sample.
-_DEFAULT_MAX_ROWS = 4_000 if ON_CLOUD else 20_000
+_DEFAULT_MAX_ROWS = 20_000
 
 warnings.filterwarnings("ignore")
 
