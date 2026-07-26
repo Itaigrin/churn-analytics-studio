@@ -24,10 +24,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 
-import os as _os
 from .config import RANDOM_STATE
-
-_N_JOBS = -1
+from .runtime_env import N_JOBS as _N_JOBS
 
 
 # ── Optional library imports ──────────────────────────────────────────────────
@@ -158,7 +156,7 @@ def get_registry(n_samples: int, is_imbalanced: bool,
 
         "KNN": {
             "needs_scale": True,
-            "clf": lambda: KNeighborsClassifier(n_jobs=-1),
+            "clf": lambda: KNeighborsClassifier(n_jobs=_N_JOBS),
             "param_dist": {
                 "clf__n_neighbors": list(range(5, 31, 2)),
                 "clf__metric":      ["euclidean", "manhattan"],

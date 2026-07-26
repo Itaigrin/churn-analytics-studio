@@ -28,11 +28,12 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from .config import RANDOM_STATE, PIPELINE_CONFIG
 from .pipeline_builder import build_preprocessor
+from .runtime_env import ON_CLOUD, N_JOBS
 
 warnings.filterwarnings("ignore")
 
-_ON_CLOUD       = os.path.exists("/mount/src")
-_N_JOBS         = 1 if _ON_CLOUD else -1   # n_jobs=-1 + OpenMP = SIGSEGV on cloud
+_ON_CLOUD       = ON_CLOUD
+_N_JOBS         = N_JOBS   # 1 on cloud — n_jobs=-1 + OpenMP = SIGSEGV there
 _CV_FOLDS       = 5
 _EARLY_STOP_RDS = 30
 _MAX_ITERS      = 500

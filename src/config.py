@@ -35,8 +35,7 @@ PRODUCTION_MODELS = [
 ]
 
 # ── Fixed pipeline config (replaces execution modes) ─────────────────────────
-import os as _os
-_ON_CLOUD = _os.path.exists("/mount/src")
+from .runtime_env import ON_CLOUD as _ON_CLOUD
 
 PIPELINE_CONFIG = {
     "cv_folds":      5,

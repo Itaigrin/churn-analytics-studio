@@ -10,13 +10,11 @@ All computations use the FITTED pipeline — no risk of data leakage.
 
 from __future__ import annotations
 
-import os
 import warnings
 
 import numpy as np
 
-_ON_CLOUD = os.path.exists("/mount/src")
-_N_JOBS   = 1 if _ON_CLOUD else -1
+from .runtime_env import N_JOBS as _N_JOBS
 import pandas as pd
 from sklearn.inspection import permutation_importance
 from sklearn.pipeline import Pipeline

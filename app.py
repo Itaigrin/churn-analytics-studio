@@ -19,13 +19,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Prevent SIGSEGV (exit code 139) on cloud: OpenMP + fork = heap corruption
-# Must be set before numpy / lightgbm / xgboost are imported
-_ON_CLOUD = os.path.exists("/mount/src")
-if _ON_CLOUD:
-    for _env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-                 "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ.setdefault(_env, "1")
+# Prevent SIGSEGV (exit code 139) on cloud: OpenMP oversubscription + fork
+# corrupts the heap. Must run BEFORE numpy / lightgbm / xgboost are imported.
+from src.runtime_env import ON_CLOUD, limit_threads
+limit_threads()
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -106,8 +103,7 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
 
 def _estimate_runtime(df: pd.DataFrame, selected_models: list) -> tuple[str, str]:
     """Estimate pipeline runtime based on data size and selected models."""
-    import os as _os
-    _on_cloud = _os.path.exists("/mount/src")
+    _on_cloud = ON_CLOUD
 
     from src.config import PIPELINE_CONFIG
     n_trials  = max(PIPELINE_CONFIG.get("optuna_trials", 30), 1)
