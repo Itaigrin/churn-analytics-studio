@@ -37,10 +37,18 @@ PRODUCTION_MODELS = [
 # ── Fixed pipeline config (replaces execution modes) ─────────────────────────
 from .runtime_env import ON_CLOUD as _ON_CLOUD
 
+# Free-tier cloud CPUs (2 vCPU) run single-threaded to avoid the OpenMP
+# segfault, so the full 30-trial x 5-fold search would take 7-20 min and
+# starve Streamlit's websocket until the browser session drops. A smaller
+# search budget keeps the hosted demo responsive; local runs are untouched.
 PIPELINE_CONFIG = {
-    "cv_folds":      5,
+    "cv_folds":      5,                       # folds for final CV evaluation
     "n_iter":        30,
-    "optuna_trials": 30,
+    "optuna_trials": 8 if _ON_CLOUD else 30,  # HPO trials per model
+    "hpo_cv_folds":  3 if _ON_CLOUD else 5,   # folds inside the HPO search
+    "hpo_max_rows":  4000 if _ON_CLOUD else 0,  # 0 = no subsampling
+    "max_iters":     200 if _ON_CLOUD else 500,  # boosting rounds ceiling
+    "rf_trees":      150 if _ON_CLOUD else 300,
 }
 
 # ── Best Overall Score weights ────────────────────────────────────────────────

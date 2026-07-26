@@ -34,10 +34,34 @@ warnings.filterwarnings("ignore")
 
 _ON_CLOUD       = ON_CLOUD
 _N_JOBS         = N_JOBS   # 1 on cloud — n_jobs=-1 + OpenMP = SIGSEGV there
-_CV_FOLDS       = 5
+_CV_FOLDS       = PIPELINE_CONFIG.get("hpo_cv_folds", 5)
 _EARLY_STOP_RDS = 30
-_MAX_ITERS      = 500
+_MAX_ITERS      = PIPELINE_CONFIG.get("max_iters", 500)
+_RF_TREES       = PIPELINE_CONFIG.get("rf_trees", 300)
+_HPO_MAX_ROWS   = PIPELINE_CONFIG.get("hpo_max_rows", 0)
 _BOOSTING       = {"XGBoost", "LightGBM", "CatBoost"}
+
+
+def _hpo_sample(X, y):
+    """
+    Stratified subsample used only for the Optuna search.
+
+    Hyperparameters transfer well from a few thousand rows, and the winning
+    config is always refitted on the full training set afterwards — so this
+    buys a large speedup on constrained hardware without changing the model
+    that ships. Returns the inputs unchanged when no cap is configured.
+    """
+    if not _HPO_MAX_ROWS or len(X) <= _HPO_MAX_ROWS:
+        return X, y
+    from sklearn.model_selection import train_test_split
+    try:
+        X_s, _, y_s, _ = train_test_split(
+            X, y, train_size=_HPO_MAX_ROWS,
+            random_state=RANDOM_STATE, stratify=y)
+    except ValueError:
+        X_s, _, y_s, _ = train_test_split(
+            X, y, train_size=_HPO_MAX_ROWS, random_state=RANDOM_STATE)
+    return X_s, y_s
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -58,10 +82,11 @@ def train_all_models(
     n_trials = PIPELINE_CONFIG.get("optuna_trials", 30)
     if n_trials <= 0:
         n_trials = 30
+    # Big datasets get fewer trials — but never more than the configured budget
     if n_samples > 100_000:
-        n_trials = max(10, n_trials // 3)
+        n_trials = min(n_trials, max(10, n_trials // 3))
     elif n_samples > 50_000:
-        n_trials = max(15, n_trials // 2)
+        n_trials = min(n_trials, max(15, n_trials // 2))
 
     pos_count = int(y_train.sum())
     neg_count = int(len(y_train) - pos_count)
@@ -79,6 +104,9 @@ def train_all_models(
     total   = len(available)
     results: dict = {}
 
+    # Search on (optionally) fewer rows; always refit the winner on all of X_train
+    X_search, y_search = _hpo_sample(X_train, y_train)
+
     for i, name in enumerate(available):
         if progress_callback:
             progress_callback(name, i, total,
@@ -90,12 +118,12 @@ def train_all_models(
         t0 = time.time()
         try:
             if name in _BOOSTING:
-                res = _train_boosting(name, X_train, y_train,
+                res = _train_boosting(name, X_search, y_search, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
                                       n_trials, spw, cw, acw,
                                       optuna_callbacks=optuna_cb)
             else:
-                res = _train_standard(name, X_train, y_train,
+                res = _train_standard(name, X_search, y_search, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
                                       n_trials, cw, is_imbalanced,
                                       optuna_callbacks=optuna_cb)
@@ -113,7 +141,8 @@ def train_all_models(
 # Standard models  (LR, RF)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
+def _train_standard(name, X_search, y_search, X_fit, y_fit,
+                    num_cols, cat_cols, bool_cols,
                     n_trials, cw, is_imbalanced, optuna_callbacks=None):
     needs_scale = (name == "Logistic Regression")
 
@@ -124,7 +153,7 @@ def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
         pipe = Pipeline([("pre", pre), ("clf", clf)])
         cv   = StratifiedKFold(n_splits=_CV_FOLDS, shuffle=True,
                                random_state=RANDOM_STATE)
-        return float(cross_val_score(pipe, X_train, y_train,
+        return float(cross_val_score(pipe, X_search, y_search,
                                      cv=cv, scoring="roc_auc",
                                      n_jobs=_N_JOBS).mean())
 
@@ -136,7 +165,7 @@ def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
     pre   = build_preprocessor(num_cols, cat_cols, bool_cols, scale=needs_scale)
     clf   = _make_clf(name, best)
     pipe  = Pipeline([("pre", pre), ("clf", clf)])
-    pipe.fit(X_train, y_train)
+    pipe.fit(X_fit, y_fit)
 
     return {"model": pipe,
             "cv_score": study.best_value,
@@ -148,7 +177,8 @@ def _train_standard(name, X_train, y_train, num_cols, cat_cols, bool_cols,
 # Boosting models  (XGBoost, LightGBM, CatBoost)  —  with early stopping
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _train_boosting(name, X_train, y_train, num_cols, cat_cols, bool_cols,
+def _train_boosting(name, X_search, y_search, X_fit, y_fit,
+                    num_cols, cat_cols, bool_cols,
                     n_trials, spw, cw, acw, optuna_callbacks=None):
     cv = StratifiedKFold(n_splits=_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
 
@@ -157,9 +187,9 @@ def _train_boosting(name, X_train, y_train, num_cols, cat_cols, bool_cols,
         fold_scores = []
         fold_n_est  = []
 
-        for tr_idx, va_idx in cv.split(X_train, y_train):
-            X_tr = X_train.iloc[tr_idx]; X_va = X_train.iloc[va_idx]
-            y_tr = y_train.iloc[tr_idx]; y_va = y_train.iloc[va_idx]
+        for tr_idx, va_idx in cv.split(X_search, y_search):
+            X_tr = X_search.iloc[tr_idx]; X_va = X_search.iloc[va_idx]
+            y_tr = y_search.iloc[tr_idx]; y_va = y_search.iloc[va_idx]
 
             pre    = build_preprocessor(num_cols, cat_cols, bool_cols, scale=False)
             X_tr_t = pre.fit_transform(X_tr)
@@ -186,7 +216,7 @@ def _train_boosting(name, X_train, y_train, num_cols, cat_cols, bool_cols,
     pre  = build_preprocessor(num_cols, cat_cols, bool_cols, scale=False)
     clf  = _make_clf_final(name, best_params, best_n_est, spw, acw)
     pipe = Pipeline([("pre", pre), ("clf", clf)])
-    pipe.fit(X_train, y_train)
+    pipe.fit(X_fit, y_fit)
 
     return {"model": pipe,
             "cv_score": study.best_value,
@@ -265,7 +295,7 @@ def _make_clf(name, params):
     if name == "Random Forest":
         from sklearn.ensemble import RandomForestClassifier
         return RandomForestClassifier(
-            n_estimators=300, random_state=RANDOM_STATE, n_jobs=_N_JOBS, **params)
+            n_estimators=_RF_TREES, random_state=RANDOM_STATE, n_jobs=_N_JOBS, **params)
 
     return None
 

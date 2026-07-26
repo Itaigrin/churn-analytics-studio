@@ -107,14 +107,19 @@ def _estimate_runtime(df: pd.DataFrame, selected_models: list) -> tuple[str, str
 
     from src.config import PIPELINE_CONFIG
     n_trials  = max(PIPELINE_CONFIG.get("optuna_trials", 30), 1)
-    cv_folds  = PIPELINE_CONFIG["cv_folds"]
+    cv_folds  = PIPELINE_CONFIG.get("hpo_cv_folds", PIPELINE_CONFIG["cv_folds"])
     n_rows    = len(df)
 
     # Effective trials after dataset-size scaling in trainer.py
     if n_rows > 100_000:
-        n_trials = max(10, n_trials // 3)
+        n_trials = min(n_trials, max(10, n_trials // 3))
     elif n_rows > 50_000:
-        n_trials = max(15, n_trials // 2)
+        n_trials = min(n_trials, max(15, n_trials // 2))
+
+    # The HPO search may run on a capped subsample (see trainer._hpo_sample)
+    _cap = PIPELINE_CONFIG.get("hpo_max_rows", 0)
+    if _cap:
+        n_rows = min(n_rows, _cap)
 
     n_cols = df.shape[1]
 
@@ -1112,6 +1117,13 @@ with _tab_pipeline:
             f"Optuna trials: **{PIPELINE_CONFIG['optuna_trials']}**  ·  "
             f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
+        if ON_CLOUD:
+            st.caption(
+                "☁️ This hosted demo runs on a small shared CPU, so the "
+                "hyperparameter search uses a reduced budget to stay responsive. "
+                "For the full search (and to keep your data on your own machine), "
+                "run the app locally — see the README."
+            )
 
         with st.expander("ℹ️ When to use each model", expanded=False):
             st.markdown(
