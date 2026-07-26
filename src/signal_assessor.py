@@ -60,13 +60,28 @@ def _point_biserial_r(x: np.ndarray, y: np.ndarray) -> float:
         return 0.0
 
 
-def _mutual_info_single(x: np.ndarray, y: np.ndarray) -> float:
-    """Fast mutual information for a single numerical feature via binning."""
+def _mutual_info_single(x: np.ndarray, y: np.ndarray, bins: int = 20) -> float:
+    """
+    Mutual information (nats) for one numerical feature, via quantile binning.
+
+    Discretising and reading MI off a contingency table is linear in the number
+    of rows. The k-nearest-neighbour estimator this replaced built a KD-tree per
+    feature, which dominated page load on large inputs while producing the same
+    ranking — the score only feeds a 0-1 signal strength, not a precise estimate.
+    """
     try:
-        from sklearn.feature_selection import mutual_info_classif
-        xi = x.reshape(-1, 1)
-        mi = mutual_info_classif(xi, y, discrete_features=False, random_state=42, n_neighbors=3)
-        return float(mi[0])
+        from sklearn.metrics import mutual_info_score
+
+        s = pd.Series(x)
+        try:
+            binned = pd.qcut(s, q=bins, labels=False, duplicates="drop")
+        except (ValueError, IndexError):
+            binned = pd.cut(s, bins=bins, labels=False)
+
+        mask = binned.notna() & pd.notna(pd.Series(y))
+        if mask.sum() < 5 or binned[mask].nunique() < 2:
+            return 0.0
+        return float(mutual_info_score(binned[mask].astype(int), np.asarray(y)[mask.values]))
     except Exception:
         return 0.0
 
