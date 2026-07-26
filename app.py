@@ -1147,6 +1147,16 @@ with _tab_pipeline:
             f"Optuna trials: **{budget['optuna_trials']}**  ·  "
             f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
+        with st.expander("⚙️ Runtime details", expanded=False):
+            from src.runtime_env import ON_CLOUD as _oc, N_JOBS as _nj, CPU_SOURCE as _src
+            import sklearn as _sk
+            st.markdown(
+                f"- Environment: **{'hosted' if _oc else 'local'}**\n"
+                f"- Parallel workers (`n_jobs`): **{_nj}** — {_src}\n"
+                f"- Threads per worker (`OMP_NUM_THREADS`): **{os.environ.get('OMP_NUM_THREADS', 'default')}**\n"
+                f"- numpy **{np.__version__}** · pandas **{pd.__version__}** · "
+                f"scikit-learn **{_sk.__version__}**"
+            )
 
         with st.expander("ℹ️ When to use each model", expanded=False):
             st.markdown(
