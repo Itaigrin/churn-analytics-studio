@@ -994,14 +994,22 @@ with _tab_pipeline:
 
     if hist_file is not None:
         try:
+            # UploadedFile keeps its read position across reruns — without this
+            # seek every rerun after the first reads b"" and the file is lost.
+            hist_file.seek(0)
             _file_bytes = hist_file.read()
             _file_hash  = hash(_file_bytes)
         except Exception:
             _file_bytes = None
             _file_hash  = None
 
-        # Only reload if this is a genuinely new file (different content hash)
-        if _file_bytes and _file_hash != st.session_state.get("_df_hash"):
+        # Reload on a genuinely new file, or whenever we somehow lost the
+        # DataFrame (e.g. the session was reset by a dropped connection)
+        _needs_load = (
+            _file_hash != st.session_state.get("_df_hash")
+            or st.session_state.df is None
+        )
+        if _file_bytes and _needs_load:
             _prog = st.progress(0, text="Loading…")
             try:
                 import io as _io

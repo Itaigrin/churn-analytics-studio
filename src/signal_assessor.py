@@ -28,6 +28,13 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from .runtime_env import ON_CLOUD
+
+# mutual_info_classif runs a KD-tree nearest-neighbour search per feature.
+# That is seconds on a normal machine but minutes on a single shared cloud
+# vCPU, so the hosted demo ranks features on a smaller stratified sample.
+_DEFAULT_MAX_ROWS = 4_000 if ON_CLOUD else 20_000
+
 warnings.filterwarnings("ignore")
 
 # ── Thresholds for Strong / Medium / Weak ─────────────────────────────────────
@@ -199,12 +206,15 @@ def assess_predictive_signal(
     df: pd.DataFrame,
     target_col: str,
     id_col: str | None = None,
-    max_rows: int = 20_000,
+    max_rows: int | None = None,
 ) -> dict:
     """
     Runs entirely on raw data. Returns the signal assessment dict.
     Designed to finish in < 5 seconds on typical datasets.
     """
+    if max_rows is None:
+        max_rows = _DEFAULT_MAX_ROWS
+
     # Work on a sample for speed; stratify on target if possible
     if len(df) > max_rows:
         try:
