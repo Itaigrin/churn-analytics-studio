@@ -101,13 +101,15 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
     st.divider()
 
 
-def _estimate_runtime(df: pd.DataFrame, selected_models: list) -> tuple[str, str]:
-    """Estimate pipeline runtime based on data size and selected models."""
+def _estimate_runtime(df: pd.DataFrame, selected_models: list,
+                      budget: dict | None = None) -> tuple[str, str]:
+    """Estimate pipeline runtime based on data size, models and search depth."""
     _on_cloud = ON_CLOUD
 
     from src.config import PIPELINE_CONFIG
-    n_trials  = max(PIPELINE_CONFIG.get("optuna_trials", 30), 1)
-    cv_folds  = PIPELINE_CONFIG.get("hpo_cv_folds", PIPELINE_CONFIG["cv_folds"])
+    cfg = {**PIPELINE_CONFIG, **(budget or {})}
+    n_trials  = max(cfg.get("optuna_trials", 30), 1)
+    cv_folds  = cfg.get("hpo_cv_folds", cfg["cv_folds"])
     n_rows    = len(df)
 
     # Effective trials after dataset-size scaling in trainer.py
@@ -117,7 +119,7 @@ def _estimate_runtime(df: pd.DataFrame, selected_models: list) -> tuple[str, str
         n_trials = min(n_trials, max(15, n_trials // 2))
 
     # The HPO search may run on a capped subsample (see trainer._hpo_sample)
-    _cap = PIPELINE_CONFIG.get("hpo_max_rows", 0)
+    _cap = cfg.get("hpo_max_rows", 0)
     if _cap:
         n_rows = min(n_rows, _cap)
 
@@ -154,7 +156,8 @@ def _estimate_runtime(df: pd.DataFrame, selected_models: list) -> tuple[str, str
     return _fmt(lo), _fmt(hi)
 
 
-def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: list):
+def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: list,
+                  budget: dict | None = None):
     """Executes Steps 3–10 and stores results in st.session_state."""
     from sklearn.model_selection import train_test_split
     from src.config import (
@@ -307,6 +310,7 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             n_samples=len(X_train),
             is_imbalanced=is_imbalanced,
             progress_callback=_cb,
+            budget=budget,
         )
 
         # Step 10: Evaluate + pick best model
@@ -1104,25 +1108,43 @@ with _tab_pipeline:
     from src.config import PRODUCTION_MODELS
     _sec("🚀", "Step 3 - Run Full Machine Learning Pipeline")
 
+    from src.config import SEARCH_PRESETS, DEFAULT_SEARCH_DEPTH, PIPELINE_CONFIG
+
     model_col, btn_col = st.columns([3, 1])
     with model_col:
         all_option   = "All Models"
         model_choices = [all_option] + PRODUCTION_MODELS
-        selected_raw = st.multiselect(
-            "Models to train",
-            options=model_choices,
-            default=[all_option],
-            help="Select one or more models. Choose 'All Models' to train all 5 production models.",
-        )
+        sel_col, depth_col = st.columns([3, 1])
+        with sel_col:
+            selected_raw = st.multiselect(
+                "Models to train",
+                options=model_choices,
+                default=[all_option],
+                help="Select one or more models. Choose 'All Models' to train all 5 production models.",
+            )
+        with depth_col:
+            _depths = list(SEARCH_PRESETS.keys())
+            search_depth = st.selectbox(
+                "Search depth",
+                options=_depths,
+                index=_depths.index(DEFAULT_SEARCH_DEPTH),
+                help=(
+                    "How many hyperparameter combinations to try per model. "
+                    "Deeper searches can find a slightly better model but take "
+                    "considerably longer. On a small shared CPU a very long run "
+                    "can outlast the browser connection, so start shallower there."
+                ),
+            )
+        budget = SEARCH_PRESETS[search_depth]
+
         if all_option in selected_raw or not selected_raw:
             selected_models = PRODUCTION_MODELS.copy()
         else:
             selected_models = [m for m in PRODUCTION_MODELS if m in selected_raw]
 
-        from src.config import PIPELINE_CONFIG
         st.caption(
             f"Training: **{', '.join(selected_models)}**  ·  "
-            f"Optuna trials: **{PIPELINE_CONFIG['optuna_trials']}**  ·  "
+            f"Optuna trials: **{budget['optuna_trials']}**  ·  "
             f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
 
@@ -1139,14 +1161,14 @@ with _tab_pipeline:
             )
     with btn_col:
         run = st.button("🚀 Run Pipeline", type="primary", use_container_width=True)
-        _eta_low, _eta_high = _estimate_runtime(df, selected_models)
+        _eta_low, _eta_high = _estimate_runtime(df, selected_models, budget)
         st.caption(f"⏱️ Est. runtime: **{_eta_low} - {_eta_high}**")
 
     if run:
         for _k in ["results", "best_model_name", "training_done", "predictions",
                    "selected_info", "total_runtime", "churn_rate", "is_imbalanced"]:
             st.session_state[_k] = None
-        _run_pipeline(df, id_col, target_col, selected_models)
+        _run_pipeline(df, id_col, target_col, selected_models, budget)
 
     if st.session_state.training_done:
         _show_results()

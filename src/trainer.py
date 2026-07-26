@@ -33,16 +33,25 @@ from .runtime_env import ON_CLOUD, N_JOBS
 warnings.filterwarnings("ignore")
 
 _ON_CLOUD       = ON_CLOUD
-_N_JOBS         = N_JOBS   # 1 on cloud — n_jobs=-1 + OpenMP = SIGSEGV there
-_CV_FOLDS       = PIPELINE_CONFIG.get("hpo_cv_folds", 5)
+_N_JOBS         = N_JOBS   # bounded by the container's real core count
 _EARLY_STOP_RDS = 30
-_MAX_ITERS      = PIPELINE_CONFIG.get("max_iters", 500)
-_RF_TREES       = PIPELINE_CONFIG.get("rf_trees", 300)
-_HPO_MAX_ROWS   = PIPELINE_CONFIG.get("hpo_max_rows", 0)
 _BOOSTING       = {"XGBoost", "LightGBM", "CatBoost"}
 
 
-def _hpo_sample(X, y):
+def resolve_budget(budget: Optional[dict] = None) -> dict:
+    """Fill any unset search knobs from PIPELINE_CONFIG."""
+    resolved = {
+        "optuna_trials": PIPELINE_CONFIG.get("optuna_trials", 30),
+        "hpo_cv_folds":  PIPELINE_CONFIG.get("hpo_cv_folds", 5),
+        "hpo_max_rows":  PIPELINE_CONFIG.get("hpo_max_rows", 0),
+        "max_iters":     PIPELINE_CONFIG.get("max_iters", 500),
+        "rf_trees":      PIPELINE_CONFIG.get("rf_trees", 300),
+    }
+    resolved.update({k: v for k, v in (budget or {}).items() if v is not None})
+    return resolved
+
+
+def _hpo_sample(X, y, max_rows: int):
     """
     Stratified subsample used only for the Optuna search.
 
@@ -51,16 +60,16 @@ def _hpo_sample(X, y):
     buys a large speedup on constrained hardware without changing the model
     that ships. Returns the inputs unchanged when no cap is configured.
     """
-    if not _HPO_MAX_ROWS or len(X) <= _HPO_MAX_ROWS:
+    if not max_rows or len(X) <= max_rows:
         return X, y
     from sklearn.model_selection import train_test_split
     try:
         X_s, _, y_s, _ = train_test_split(
-            X, y, train_size=_HPO_MAX_ROWS,
+            X, y, train_size=max_rows,
             random_state=RANDOM_STATE, stratify=y)
     except ValueError:
         X_s, _, y_s, _ = train_test_split(
-            X, y, train_size=_HPO_MAX_ROWS, random_state=RANDOM_STATE)
+            X, y, train_size=max_rows, random_state=RANDOM_STATE)
     return X_s, y_s
 
 
@@ -78,8 +87,11 @@ def train_all_models(
     n_samples: int,
     is_imbalanced: bool,
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
+    budget: Optional[dict] = None,
 ) -> dict:
-    n_trials = PIPELINE_CONFIG.get("optuna_trials", 30)
+    budget   = resolve_budget(budget)
+    n_trials = budget["optuna_trials"]
+    cv_folds = budget["hpo_cv_folds"]
     if n_trials <= 0:
         n_trials = 30
     # Big datasets get fewer trials — but never more than the configured budget
@@ -105,12 +117,12 @@ def train_all_models(
     results: dict = {}
 
     # Search on (optionally) fewer rows; always refit the winner on all of X_train
-    X_search, y_search = _hpo_sample(X_train, y_train)
+    X_search, y_search = _hpo_sample(X_train, y_train, budget["hpo_max_rows"])
 
     for i, name in enumerate(available):
         if progress_callback:
             progress_callback(name, i, total,
-                              f"Optuna {n_trials} trials · 5-fold CV")
+                              f"Optuna {n_trials} trials · {cv_folds}-fold CV")
 
         # Optuna-level callback: fires after every trial → keeps WebSocket alive
         optuna_cb = _make_optuna_cb(progress_callback, name, i, total, n_trials)
@@ -120,12 +132,12 @@ def train_all_models(
             if name in _BOOSTING:
                 res = _train_boosting(name, X_search, y_search, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
-                                      n_trials, spw, cw, acw,
+                                      n_trials, spw, cw, acw, budget,
                                       optuna_callbacks=optuna_cb)
             else:
                 res = _train_standard(name, X_search, y_search, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
-                                      n_trials, cw, is_imbalanced,
+                                      n_trials, cw, is_imbalanced, budget,
                                       optuna_callbacks=optuna_cb)
             res["train_time"] = time.time() - t0
             results[name] = res
@@ -143,15 +155,15 @@ def train_all_models(
 
 def _train_standard(name, X_search, y_search, X_fit, y_fit,
                     num_cols, cat_cols, bool_cols,
-                    n_trials, cw, is_imbalanced, optuna_callbacks=None):
+                    n_trials, cw, is_imbalanced, budget, optuna_callbacks=None):
     needs_scale = (name == "Logistic Regression")
 
     def objective(trial):
         params = _suggest(trial, name, cw, is_imbalanced)
         pre  = build_preprocessor(num_cols, cat_cols, bool_cols, scale=needs_scale)
-        clf  = _make_clf(name, params)
+        clf  = _make_clf(name, params, budget)
         pipe = Pipeline([("pre", pre), ("clf", clf)])
-        cv   = StratifiedKFold(n_splits=_CV_FOLDS, shuffle=True,
+        cv   = StratifiedKFold(n_splits=budget["hpo_cv_folds"], shuffle=True,
                                random_state=RANDOM_STATE)
         return float(cross_val_score(pipe, X_search, y_search,
                                      cv=cv, scoring="roc_auc",
@@ -163,7 +175,7 @@ def _train_standard(name, X_search, y_search, X_fit, y_fit,
 
     best  = study.best_params
     pre   = build_preprocessor(num_cols, cat_cols, bool_cols, scale=needs_scale)
-    clf   = _make_clf(name, best)
+    clf   = _make_clf(name, best, budget)
     pipe  = Pipeline([("pre", pre), ("clf", clf)])
     pipe.fit(X_fit, y_fit)
 
@@ -179,8 +191,10 @@ def _train_standard(name, X_search, y_search, X_fit, y_fit,
 
 def _train_boosting(name, X_search, y_search, X_fit, y_fit,
                     num_cols, cat_cols, bool_cols,
-                    n_trials, spw, cw, acw, optuna_callbacks=None):
-    cv = StratifiedKFold(n_splits=_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                    n_trials, spw, cw, acw, budget, optuna_callbacks=None):
+    cv = StratifiedKFold(n_splits=budget["hpo_cv_folds"], shuffle=True,
+                         random_state=RANDOM_STATE)
+    max_iters = budget["max_iters"]
 
     def objective(trial):
         params      = _suggest(trial, name, cw, False, spw=spw)
@@ -195,14 +209,14 @@ def _train_boosting(name, X_search, y_search, X_fit, y_fit,
             X_tr_t = pre.fit_transform(X_tr)
             X_va_t = pre.transform(X_va)
 
-            clf = _make_clf_es(name, params, spw, acw)
+            clf = _make_clf_es(name, params, spw, acw, max_iters)
             _fit_es(clf, name, X_tr_t, y_tr, X_va_t, y_va)
 
             y_prob = clf.predict_proba(X_va_t)[:, 1]
             fold_scores.append(roc_auc_score(y_va, y_prob))
             fold_n_est.append(_best_n(clf, name))
 
-        best_n = int(np.clip(np.median(fold_n_est), 50, _MAX_ITERS))
+        best_n = int(np.clip(np.median(fold_n_est), 50, max_iters))
         trial.set_user_attr("best_n_estimators", best_n)
         return float(np.mean(fold_scores))
 
@@ -285,7 +299,8 @@ def _suggest(trial, name, cw, is_imbalanced, spw=1.0) -> dict:
 # Classifier factories
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _make_clf(name, params):
+def _make_clf(name, params, budget=None):
+    budget = budget or resolve_budget()
     if name == "Logistic Regression":
         from sklearn.linear_model import LogisticRegression
         return LogisticRegression(
@@ -295,17 +310,18 @@ def _make_clf(name, params):
     if name == "Random Forest":
         from sklearn.ensemble import RandomForestClassifier
         return RandomForestClassifier(
-            n_estimators=_RF_TREES, random_state=RANDOM_STATE, n_jobs=_N_JOBS, **params)
+            n_estimators=budget["rf_trees"], random_state=RANDOM_STATE,
+            n_jobs=_N_JOBS, **params)
 
     return None
 
 
-def _make_clf_es(name, params, spw, acw):
+def _make_clf_es(name, params, spw, acw, max_iters):
     """Classifier with early stopping for Optuna fold loop."""
     if name == "XGBoost":
         from xgboost import XGBClassifier
         return XGBClassifier(
-            n_estimators=_MAX_ITERS,
+            n_estimators=max_iters,
             early_stopping_rounds=_EARLY_STOP_RDS,
             eval_metric="auc",
             scale_pos_weight=spw,
@@ -316,7 +332,7 @@ def _make_clf_es(name, params, spw, acw):
         from lightgbm import LGBMClassifier
         bf = params.get("bagging_fraction", 1.0)
         return LGBMClassifier(
-            n_estimators=_MAX_ITERS,
+            n_estimators=max_iters,
             class_weight="balanced" if acw else None,
             verbose=-1, random_state=RANDOM_STATE, n_jobs=_N_JOBS,
             bagging_freq=5 if bf < 1.0 else 0,
@@ -325,7 +341,7 @@ def _make_clf_es(name, params, spw, acw):
     if name == "CatBoost":
         from catboost import CatBoostClassifier
         return CatBoostClassifier(
-            iterations=_MAX_ITERS,
+            iterations=max_iters,
             early_stopping_rounds=_EARLY_STOP_RDS,
             eval_metric="AUC",
             use_best_model=True,

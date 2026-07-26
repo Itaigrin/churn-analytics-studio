@@ -37,17 +37,43 @@ PRODUCTION_MODELS = [
 # ── Fixed pipeline config (replaces execution modes) ─────────────────────────
 from .runtime_env import ON_CLOUD as _ON_CLOUD
 
-# Same search budget everywhere. The cloud crash was caused by oversubscribed
-# parallelism (see runtime_env.usable_cpus), not by the size of the search, so
-# there is no reason for the hosted app to train a weaker model than a local one.
+# How hard to search for hyperparameters. The user picks this in Step 3.
+#
+# It exists because wall-clock time is a hard constraint on small shared CPUs:
+# a search that runs for many minutes outlives the browser's connection to the
+# app, and the session is lost before results are written. Rather than guess on
+# the user's behalf, expose the trade-off and let them choose.
+SEARCH_PRESETS = {
+    "Quick": {
+        "optuna_trials": 8,
+        "hpo_cv_folds":  3,
+        "hpo_max_rows":  4000,   # 0 = search on the full training set
+        "max_iters":     200,    # boosting rounds ceiling
+        "rf_trees":      150,
+    },
+    "Balanced": {
+        "optuna_trials": 15,
+        "hpo_cv_folds":  5,
+        "hpo_max_rows":  6000,
+        "max_iters":     300,
+        "rf_trees":      200,
+    },
+    "Thorough": {
+        "optuna_trials": 30,
+        "hpo_cv_folds":  5,
+        "hpo_max_rows":  0,
+        "max_iters":     500,
+        "rf_trees":      300,
+    },
+}
+
+# Thorough matches the original behaviour and is the default on a real machine.
+DEFAULT_SEARCH_DEPTH = "Quick" if _ON_CLOUD else "Thorough"
+
 PIPELINE_CONFIG = {
     "cv_folds":      5,    # folds for the final CV evaluation
     "n_iter":        30,
-    "optuna_trials": 30,   # HPO trials per model
-    "hpo_cv_folds":  5,    # folds inside the HPO search
-    "hpo_max_rows":  0,    # 0 = search on the full training set
-    "max_iters":     500,  # boosting rounds ceiling
-    "rf_trees":      300,
+    **SEARCH_PRESETS["Thorough"],
 }
 
 # ── Best Overall Score weights ────────────────────────────────────────────────
