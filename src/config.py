@@ -35,7 +35,6 @@ PRODUCTION_MODELS = [
 ]
 
 # ── Fixed pipeline config (replaces execution modes) ─────────────────────────
-from .runtime_env import ON_CLOUD as _ON_CLOUD
 
 # How hard to search for hyperparameters. The user picks this in Step 3.
 #
@@ -67,8 +66,10 @@ SEARCH_PRESETS = {
     },
 }
 
-# Thorough matches the original behaviour and is the default on a real machine.
-DEFAULT_SEARCH_DEPTH = "Quick" if _ON_CLOUD else "Thorough"
+# Thorough is the original behaviour and stays the default everywhere.
+# Quick / Balanced are there for when a faster answer is worth a slightly
+# less tuned model — that is the user's call to make, not a silent default.
+DEFAULT_SEARCH_DEPTH = "Thorough"
 
 PIPELINE_CONFIG = {
     "cv_folds":      5,    # folds for the final CV evaluation
