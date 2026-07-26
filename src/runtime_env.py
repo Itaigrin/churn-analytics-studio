@@ -81,13 +81,16 @@ _THREAD_ENV_VARS = (
 
 def limit_threads() -> None:
     """
-    Pin BLAS/OpenMP to 1 thread per worker. Call before importing numpy.
+    Cap BLAS/OpenMP at the container's real core count. Call before numpy.
 
-    Parallelism comes from joblib (`N_JOBS` processes). Letting each of those
-    ALSO spin up a full OpenMP thread pool multiplies the two and re-creates
-    the oversubscription we are avoiding, so the inner pools stay at 1.
+    The goal is to stop OpenMP from sizing its pools off the HOST's core
+    count — not to serialise the work. Pinning these to 1 would cripple the
+    many single-process paths (mutual information, final model fits) that
+    have no joblib parallelism to fall back on. joblib's worker processes
+    limit their own inner pools, so this setting cannot multiply with N_JOBS.
     """
     if not ON_CLOUD:
         return
+    n = str(usable_cpus())
     for var in _THREAD_ENV_VARS:
-        os.environ.setdefault(var, "1")
+        os.environ.setdefault(var, n)
