@@ -20,7 +20,7 @@ from typing import Callable, Optional
 
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 
 import optuna
@@ -51,6 +51,13 @@ def resolve_budget(budget: Optional[dict] = None) -> dict:
     }
     resolved.update({k: v for k, v in (budget or {}).items() if v is not None})
     return resolved
+
+
+def make_folds(n_splits: int, groups=None):
+    """Stratified folds. With groups, all rows of one customer stay in the same fold."""
+    if groups is not None:
+        return StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+    return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
 
 
 def _hpo_sample(X, y, max_rows: int):
@@ -88,6 +95,7 @@ def train_all_models(
     is_imbalanced: bool,
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
     budget: Optional[dict] = None,
+    groups=None,
 ) -> dict:
     budget   = resolve_budget(budget)
     n_trials = budget["optuna_trials"]
@@ -120,6 +128,7 @@ def train_all_models(
 
     # Search on (optionally) fewer rows; always refit the winner on all of X_train
     X_search, y_search = _hpo_sample(X_train, y_train, budget["hpo_max_rows"])
+    groups_search = groups.loc[X_search.index] if groups is not None else None
 
     for i, name in enumerate(available):
         if progress_callback:
@@ -135,12 +144,12 @@ def train_all_models(
                 res = _train_boosting(name, X_search, y_search, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
                                       n_trials, spw, cw, acw, budget,
-                                      optuna_callbacks=optuna_cb)
+                                      optuna_callbacks=optuna_cb, groups=groups_search)
             else:
                 res = _train_standard(name, X_search, y_search, X_train, y_train,
                                       num_cols, cat_cols, bool_cols,
                                       n_trials, cw, is_imbalanced, budget,
-                                      optuna_callbacks=optuna_cb)
+                                      optuna_callbacks=optuna_cb, groups=groups_search)
             res["train_time"] = time.time() - t0
             results[name] = res
         except Exception as exc:
@@ -157,7 +166,7 @@ def train_all_models(
 
 def _train_standard(name, X_search, y_search, X_fit, y_fit,
                     num_cols, cat_cols, bool_cols,
-                    n_trials, cw, is_imbalanced, budget, optuna_callbacks=None):
+                    n_trials, cw, is_imbalanced, budget, optuna_callbacks=None, groups=None):
     needs_scale = (name == "Logistic Regression")
 
     def objective(trial):
@@ -165,9 +174,8 @@ def _train_standard(name, X_search, y_search, X_fit, y_fit,
         pre  = build_preprocessor(num_cols, cat_cols, bool_cols, scale=needs_scale)
         clf  = _make_clf(name, params, budget)
         pipe = Pipeline([("pre", pre), ("clf", clf)])
-        cv   = StratifiedKFold(n_splits=budget["hpo_cv_folds"], shuffle=True,
-                               random_state=RANDOM_STATE)
-        return float(cross_val_score(pipe, X_search, y_search,
+        cv   = make_folds(budget["hpo_cv_folds"], groups)
+        return float(cross_val_score(pipe, X_search, y_search, groups=groups,
                                      cv=cv, scoring="roc_auc",
                                      n_jobs=_N_JOBS).mean())
 
@@ -195,9 +203,8 @@ def _train_standard(name, X_search, y_search, X_fit, y_fit,
 
 def _train_boosting(name, X_search, y_search, X_fit, y_fit,
                     num_cols, cat_cols, bool_cols,
-                    n_trials, spw, cw, acw, budget, optuna_callbacks=None):
-    cv = StratifiedKFold(n_splits=budget["hpo_cv_folds"], shuffle=True,
-                         random_state=RANDOM_STATE)
+                    n_trials, spw, cw, acw, budget, optuna_callbacks=None, groups=None):
+    cv = make_folds(budget["hpo_cv_folds"], groups)
     max_iters = budget["max_iters"]
 
     def objective(trial):
@@ -205,7 +212,7 @@ def _train_boosting(name, X_search, y_search, X_fit, y_fit,
         fold_scores = []
         fold_n_est  = []
 
-        for tr_idx, va_idx in cv.split(X_search, y_search):
+        for tr_idx, va_idx in cv.split(X_search, y_search, groups):
             X_tr = X_search.iloc[tr_idx]; X_va = X_search.iloc[va_idx]
             y_tr = y_search.iloc[tr_idx]; y_va = y_search.iloc[va_idx]
 

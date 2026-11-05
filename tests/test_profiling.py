@@ -45,7 +45,7 @@ def test_iso_dates_are_dates_not_phone_numbers():
     p = profile(pd.DataFrame({"last_login": days}))
     assert p["columns"]["last_login"]["detected_type"] == "datetime"
     assert p["columns"]["last_login"]["is_phone"] is False
-    assert any("last_login" in w for w in p["general_warnings"])
+    assert p["datetime_cols"] == ["last_login"]
 
 
 def test_phone_numbers_are_still_identifiers():

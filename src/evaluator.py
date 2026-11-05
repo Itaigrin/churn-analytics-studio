@@ -28,14 +28,13 @@ from sklearn.metrics import (
     confusion_matrix,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.model_selection import cross_val_predict
 
 from .business import lift_table
 from .calibration import CalibratedModel, PlattCalibrator
-from .config import (
-    OOF_FOLDS, RANDOM_STATE, SCORE_WEIGHT_PR_AUC, SCORE_WEIGHT_RECALL, SCORE_WEIGHT_ROC,
-)
+from .config import OOF_FOLDS, SCORE_WEIGHT_PR_AUC, SCORE_WEIGHT_RECALL, SCORE_WEIGHT_ROC
 from .errors import ChurnAppError
+from .trainer import make_folds
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +94,14 @@ def _metrics_at(y_true, y_prob, threshold: float) -> dict:
 
 # ── Choosing: out-of-fold on the training rows ────────────────────────────────
 
-def out_of_fold_scores(pipeline, X, y) -> np.ndarray:
-    folds = StratifiedKFold(n_splits=OOF_FOLDS, shuffle=True, random_state=RANDOM_STATE)
-    return cross_val_predict(clone(pipeline), X, y, cv=folds, method="predict_proba")[:, 1]
+def out_of_fold_scores(pipeline, X, y, groups=None) -> np.ndarray:
+    folds = make_folds(OOF_FOLDS, groups)
+    return cross_val_predict(clone(pipeline), X, y, groups=groups, cv=folds, method="predict_proba")[:, 1]
 
 
-def evaluate_candidate(pipeline, X, y) -> dict:
+def evaluate_candidate(pipeline, X, y, groups=None) -> dict:
     """Calibrator, threshold and metrics for one model, from its out-of-fold scores."""
-    scores = out_of_fold_scores(pipeline, X, y)
+    scores = out_of_fold_scores(pipeline, X, y, groups)
     calibrator = PlattCalibrator().fit(scores, y)
     calibrated = calibrator.transform(scores)
     threshold = optimize_threshold(y, calibrated)
@@ -110,14 +109,14 @@ def evaluate_candidate(pipeline, X, y) -> dict:
             **_metrics_at(y, calibrated, threshold)}
 
 
-def evaluate_all(results: dict, X_train, y_train, progress_callback=None) -> dict:
+def evaluate_all(results: dict, X_train, y_train, progress_callback=None, groups=None) -> dict:
     """Evaluate every successfully trained model on the same basis."""
     usable = [name for name, r in results.items() if r.get("model") is not None]
     for i, name in enumerate(usable):
         if progress_callback:
             progress_callback(name, i, len(usable))
         try:
-            results[name].update(evaluate_candidate(results[name]["model"], X_train, y_train))
+            results[name].update(evaluate_candidate(results[name]["model"], X_train, y_train, groups))
         except Exception as exc:
             # A model that cannot be evaluated cannot win; its error is shown in the table
             logger.exception("Evaluating %s failed", name)
