@@ -37,7 +37,7 @@ pytest
 
 ## Quick Start (Online)
 
-The app is live at: **[HuggingFace Spaces](https://huggingface.co/spaces/Itaigrin/churn-analytics-studio)**
+The app is live at: **[Streamlit Community Cloud](https://churn-analytics-studio.streamlit.app)**
 
 > ⚠️ **For companies with sensitive customer data** — use the local installation below. Data never leaves your machine.
 
