@@ -2,8 +2,8 @@
 Step 2 — Automatic Data Profiling.
 
 Classifies every column as: numeric / categorical / boolean / datetime / identifier.
-Detects: ID columns, email, phone, UUID, hash, constant, near-constant,
-         high-cardinality, and potential data-leakage columns.
+Detects: ID columns, email, phone, UUID, hash, personal data, constant,
+         near-constant and high-cardinality columns. Leaks are handled by leakage.py.
 No statistics are computed that could later cause leakage — only column-level properties.
 """
 
@@ -14,9 +14,10 @@ import numpy as np
 import pandas as pd
 
 from .config import (
-    NULL_THRESHOLD, NEAR_CONSTANT_THRESHOLD, HIGH_CARDINALITY_LIMIT,
-    ID_HINTS, CHURN_HINTS, LEAK_HINTS,
+    NULL_THRESHOLD, NEAR_CONSTANT_THRESHOLD, NEAR_CONSTANT_MIN_RARE, HIGH_CARDINALITY_LIMIT,
+    ID_HINTS, CHURN_HINTS, PERSONAL_DATA_HINTS,
 )
+from .pipeline_builder import is_text_column
 
 # ── Regex patterns ────────────────────────────────────────────────────────────
 _EMAIL_RE = re.compile(r"^[\w.+\-]+@[\w\-]+\.[a-z]{2,}$", re.I)
@@ -25,7 +26,9 @@ _UUID_RE  = re.compile(
 )
 _HASH_RE  = re.compile(r"^[0-9a-f]{32,64}$", re.I)
 _PHONE_RE = re.compile(r"^[\d\s\-\+\(\)\.]{7,20}$")
-_BOOL_STR = {"yes", "no", "true", "false", "1", "0", "y", "n", "t", "f"}
+_DATE_RE  = re.compile(r"^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}([ T].*)?$")
+_BOOL_STR = {"yes", "no", "true", "false", "1", "0", "y", "n", "t", "f", "כן", "לא"}
+_LARGE_CODE = 1_000_000     # numbers this large with a fixed length are codes, not amounts
 
 
 # ── Public helpers (used by app.py) ──────────────────────────────────────────
@@ -38,7 +41,7 @@ def detect_id_column(df: pd.DataFrame) -> Optional[str]:
             return norm[hint]
     # Fallback: all-unique object column
     for col in df.columns:
-        if df[col].dtype == object and df[col].nunique() == len(df):
+        if is_text_column(df[col]) and df[col].nunique() == len(df):
             if any(kw in col.lower() for kw in ["id", "no", "num", "code", "key"]):
                 return col
     return None
@@ -59,7 +62,7 @@ def detect_target_column(df: pd.DataFrame, exclude: list[str] | None = None) -> 
         if col in exclude:
             continue
         vals = {str(v).strip().lower() for v in df[col].dropna().unique()}
-        if vals <= _BOOL_STR and any(h in col.lower() for h in ["churn", "attrition", "left", "exit"]):
+        if vals <= _BOOL_STR and any(h in col.lower() for h in ["churn", "attrition", "left", "exit", "נטש", "נטיש", "עזב"]):
             return col
 
     # Last resort: single binary column
@@ -83,7 +86,6 @@ def profile_dataset(
       - per-column info  (type, nulls, cardinality, flags)
       - drop_cols        {col: reason}
       - numeric_cols, categorical_cols, boolean_cols, datetime_cols
-      - leakage_warnings []
       - summary stats
     """
     exclude = {c for c in [target_col, id_col] if c}
@@ -100,12 +102,11 @@ def profile_dataset(
         "categorical_cols": [],
         "boolean_cols":     [],
         "datetime_cols":    [],
-        "leakage_warnings": [],
         "general_warnings": [],
     }
 
     for col in X.columns:
-        info = _profile_column(X[col])
+        info = _profile_column(X[col], col)
         report["columns"][col] = info
 
         reason = _drop_reason(col, info)
@@ -113,17 +114,13 @@ def profile_dataset(
             report["drop_cols"][col] = reason
             continue
 
-        # Leakage hints
-        col_low = col.lower()
-        if any(h in col_low for h in LEAK_HINTS):
-            report["leakage_warnings"].append(
-                f"🚨 **{col}** — name suggests a post-churn event (data leakage risk)"
-            )
-
         # Classify
         t = info["detected_type"]
         if t == "datetime":
             report["datetime_cols"].append(col)
+            report["general_warnings"].append(
+                f"📅 **{col}** is a date. Dates are not used as model inputs yet, so it was left out."
+            )
         elif t == "boolean":
             report["boolean_cols"].append(col)
         elif t == "numeric":
@@ -142,7 +139,7 @@ def profile_dataset(
 
 # ── Per-column profiling ──────────────────────────────────────────────────────
 
-def _profile_column(s: pd.Series) -> dict:
+def _profile_column(s: pd.Series, name: str = "") -> dict:
     n = len(s)
     non_null = s.dropna()
     null_count = int(s.isna().sum())
@@ -159,6 +156,7 @@ def _profile_column(s: pd.Series) -> dict:
         "is_near_constant": False,
         "is_high_card":     False,
         "is_id_like":       False,
+        "is_personal":      False,
         "is_email":         False,
         "is_phone":         False,
         "is_uuid":          False,
@@ -179,20 +177,26 @@ def _profile_column(s: pd.Series) -> dict:
         info["top_freq"]  = float(vc.iloc[0])
 
     info["is_constant"]      = info["n_unique"] <= 1
-    info["is_near_constant"] = (info["top_freq"] or 0.0) >= NEAR_CONSTANT_THRESHOLD
+    # A flag held by 1.5% of customers can matter, as long as enough rows show it
+    n_rare = len(non_null) - int(s.value_counts().iloc[0])
+    info["is_near_constant"] = (
+        (info["top_freq"] or 0.0) >= NEAR_CONSTANT_THRESHOLD and n_rare < NEAR_CONSTANT_MIN_RARE
+    )
+
+    # ── Personal data is never a model input ─────────────────────────────────
+    if name.strip().lower() in PERSONAL_DATA_HINTS:
+        info["is_personal"] = True
+        info["detected_type"] = "identifier"
+        return info
 
     # ── Datetime ──────────────────────────────────────────────────────────────
     if "datetime" in str(s.dtype):
         info["detected_type"] = "datetime"
         return info
 
-    if s.dtype == object:
-        try:
-            pd.to_datetime(non_null.head(100), infer_datetime_format=True, errors="raise")
-            info["detected_type"] = "datetime"
-            return info
-        except Exception:
-            pass
+    if is_text_column(s) and _looks_like_dates(non_null):
+        info["detected_type"] = "datetime"
+        return info
 
     # ── Numeric ───────────────────────────────────────────────────────────────
     if pd.api.types.is_numeric_dtype(s):
@@ -205,8 +209,7 @@ def _profile_column(s: pd.Series) -> dict:
         unique_vals = set(non_null.unique())
         if unique_vals <= {0, 1, 0.0, 1.0, True, False}:
             info["detected_type"] = "boolean"
-        elif info["n_unique"] == n and n >= 100:
-            # All-unique numeric → almost certainly a row/customer ID, not a feature
+        elif info["n_unique"] == n and n >= 100 and _looks_like_id_number(non_null, n):
             info["is_id_like"] = True
             info["detected_type"] = "identifier"
         else:
@@ -260,6 +263,30 @@ def _profile_column(s: pd.Series) -> dict:
     return info
 
 
+def _looks_like_dates(values: pd.Series) -> bool:
+    sample = values.astype(str).str.strip().head(200)
+    if sample.map(lambda v: bool(_DATE_RE.match(v))).mean() < 0.90:
+        return False
+    parsed = pd.to_datetime(sample, errors="coerce", format="mixed", dayfirst=True)
+    return parsed.notna().mean() >= 0.90
+
+
+def _looks_like_id_number(values: pd.Series, n: int) -> bool:
+    """
+    All-unique numbers are an ID only if they look like one. Salaries and
+    distances are all-unique too, but they have fractions or an uneven spread.
+    """
+    numbers = values.astype(float)
+    if (numbers != numbers.round()).any():
+        return False
+    is_sequence = numbers.max() - numbers.min() <= 2 * n
+    is_fixed_length_code = (
+        numbers.min() >= _LARGE_CODE
+        and numbers.astype("int64").astype(str).str.len().nunique() == 1
+    )
+    return bool(is_sequence or is_fixed_length_code)
+
+
 def _drop_reason(col: str, info: dict) -> Optional[str]:
     if info["null_pct"] > NULL_THRESHOLD:
         return f"Too many missing values ({info['null_pct']:.0%} null)"
@@ -268,7 +295,7 @@ def _drop_reason(col: str, info: dict) -> Optional[str]:
     if info["is_near_constant"]:
         return f"Near-constant ({info['top_freq']:.1%} same value — carries no signal)"
     if info["detected_type"] == "identifier":
-        flags = [k for k in ("is_email","is_uuid","is_hash","is_phone","is_id_like") if info[k]]
+        flags = [k for k in ("is_email","is_uuid","is_hash","is_phone","is_id_like","is_personal") if info[k]]
         return f"Identifier column ({', '.join(flags) or 'all-unique values'})"
     if info["is_high_card"] and info["detected_type"] == "categorical":
         return f"High cardinality ({info['n_unique']} unique values — likely free-text or ID)"

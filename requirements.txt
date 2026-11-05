@@ -5,11 +5,10 @@
 # no code change on our side: a newer numpy/scikit-learn shifted OpenMP
 # behaviour and training started dying with SIGSEGV (exit code 139).
 #
-# Exact pins make the deployed runtime reproducible. This set was verified
-# end-to-end before pinning: every module imports, all five models train, and
-# CV + calibration complete on a real 8k-row dataset.
+# Exact pins make the deployed runtime reproducible. They need Python 3.12 or newer.
 #
-# When upgrading, change one line at a time and re-run a full pipeline.
+# When upgrading, change one line at a time and run pytest: the suite fails if
+# calibration or any other step stops working, instead of it degrading silently.
 
 # Must match `sdk_version` in README.md: HuggingFace appends
 # `streamlit==<sdk_version>` to this same pip command, so any mismatch is an
@@ -23,7 +22,6 @@ scikit-learn==1.9.0
 scipy==1.18.0
 joblib==1.5.3
 
-plotly==6.9.0
 openpyxl==3.1.5
 xlrd==2.0.2
 
@@ -32,4 +30,3 @@ lightgbm==4.7.0
 catboost==1.2.10
 optuna==4.9.0
 shap==0.52.0
-imbalanced-learn==0.14.2

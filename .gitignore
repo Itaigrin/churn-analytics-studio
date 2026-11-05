@@ -5,3 +5,4 @@ __pycache__/
 *.csv
 *.xlsx
 *.xls
+.pytest_cache/

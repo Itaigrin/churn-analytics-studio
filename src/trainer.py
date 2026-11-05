@@ -8,12 +8,12 @@ Per-model strategy:
   LightGBM            : Optuna  →  manual 5-fold, early_stopping_rounds=30
   CatBoost            : Optuna  →  manual 5-fold, early_stopping_rounds=30
 
-All preprocessing is fitted INSIDE each fold → zero data leakage.
+All preprocessing is fitted inside each fold.
 """
 
 from __future__ import annotations
 
-import os
+import logging
 import time
 import warnings
 from typing import Callable, Optional
@@ -31,6 +31,8 @@ from .pipeline_builder import build_preprocessor
 from .runtime_env import ON_CLOUD, N_JOBS
 
 warnings.filterwarnings("ignore")
+
+logger = logging.getLogger(__name__)
 
 _ON_CLOUD       = ON_CLOUD
 _N_JOBS         = N_JOBS   # bounded by the container's real core count
@@ -80,8 +82,6 @@ def _hpo_sample(X, y, max_rows: int):
 def train_all_models(
     X_train,
     y_train,
-    X_test,
-    y_test,
     profile: dict,
     selected_models: list[str],
     n_samples: int,
@@ -102,7 +102,9 @@ def train_all_models(
 
     pos_count = int(y_train.sum())
     neg_count = int(len(y_train) - pos_count)
-    spw = round(neg_count / pos_count, 2) if pos_count > 0 else 1.0
+    # Same policy for all five models: reweight only when churners are rare. Giving
+    # one model weights the others lack is what used to decide the winner on Recall.
+    spw = round(neg_count / pos_count, 2) if (is_imbalanced and pos_count > 0) else 1.0
     acw = "Balanced" if is_imbalanced else None
     cw  = "balanced" if is_imbalanced else None
 
@@ -142,9 +144,9 @@ def train_all_models(
             res["train_time"] = time.time() - t0
             results[name] = res
         except Exception as exc:
-            import traceback as _tb
-            results[name] = {"error": str(exc), "model": None,
-                             "_tb": _tb.format_exc()}
+            # One model failing must not stop the others; the error is shown in its table row
+            logger.exception("Training %s failed", name)
+            results[name] = {"error": str(exc), "model": None}
 
     return results
 
@@ -173,7 +175,9 @@ def _train_standard(name, X_search, y_search, X_fit, y_fit,
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False,
                    callbacks=optuna_callbacks or [])
 
-    best  = study.best_params
+    # Replay the winning trial: best_params holds only what Optuna searched, so
+    # anything _suggest fixed itself, such as class_weight, would otherwise be lost.
+    best  = _suggest(optuna.trial.FixedTrial(study.best_params), name, cw, is_imbalanced)
     pre   = build_preprocessor(num_cols, cat_cols, bool_cols, scale=needs_scale)
     clf   = _make_clf(name, best, budget)
     pipe  = Pipeline([("pre", pre), ("clf", clf)])
@@ -305,7 +309,7 @@ def _make_clf(name, params, budget=None):
         from sklearn.linear_model import LogisticRegression
         return LogisticRegression(
             max_iter=1000, random_state=RANDOM_STATE,
-            solver="lbfgs", penalty="l2", n_jobs=_N_JOBS, **params)
+            solver="lbfgs", **params)
 
     if name == "Random Forest":
         from sklearn.ensemble import RandomForestClassifier
@@ -361,7 +365,7 @@ def _fit_es(clf, name, X_tr, y_tr, X_va, y_va):
         import lightgbm as lgb
         clf.fit(
             X_tr, y_tr,
-            eval_set=[(X_va, y_va)],
+            eval_X=X_va, eval_y=y_va,
             callbacks=[
                 lgb.early_stopping(_EARLY_STOP_RDS, verbose=False),
                 lgb.log_evaluation(period=-1),
