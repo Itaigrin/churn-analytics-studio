@@ -37,6 +37,7 @@ from .explain import MAX_CUSTOMERS, ColumnReference, Reason, build_reference, co
 from .feature_engineering import FeatureSpec, apply_features, fit_feature_spec
 from .leakage import LeakFinding, scan_for_leakage
 from .monitoring import DriftReference, DriftReport, build_drift_reference, drift_report
+from .outcomes import OutcomeReport, outcome_report
 from .pipeline_builder import (
     convert_target, days_before, detect_date_order, normalize_column_name, parse_dates, raw_clean,
 )
@@ -81,6 +82,18 @@ class ChurnArtifact:
         """How far this file's columns and scores are from the training customers."""
         X, _ = conform(df_new, self.schema, as_of)
         return drift_report(self.drift_reference, X, probabilities)
+
+    def check_outcomes(self, df_scored: pd.DataFrame, outcome_col: str, positive_label, then: dict,
+                       as_of=None) -> OutcomeReport:
+        """
+        Score customers whose real outcome is now known, and compare with how the model
+        did when it was trained. Rows without an outcome are left out.
+        """
+        y = convert_target(df_scored[outcome_col], positive_label)
+        known = y.notna()
+        customers = df_scored.loc[known].drop(columns=[outcome_col])
+        probabilities = self.predict_proba(customers, allow_missing=True, as_of=as_of)
+        return outcome_report(probabilities, y[known].astype(int), self.threshold, then)
 
     def explain(self, df_new: pd.DataFrame, probabilities: np.ndarray, as_of=None) -> list[list[Reason]]:
         """The main reasons behind each customer's risk. Only the riskiest are explained."""

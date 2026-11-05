@@ -73,7 +73,7 @@ def overall_score(pr_auc: float, recall: float, roc_auc: float) -> float:
             + SCORE_WEIGHT_ROC * roc_auc)
 
 
-def _metrics_at(y_true, y_prob, threshold: float) -> dict:
+def metrics_at(y_true, y_prob, threshold: float) -> dict:
     y_true = np.asarray(y_true)
     flagged = y_prob >= threshold
     tp = int(y_true[flagged].sum())
@@ -106,7 +106,7 @@ def evaluate_candidate(pipeline, X, y, groups=None) -> dict:
     calibrated = calibrator.transform(scores)
     threshold = optimize_threshold(y, calibrated)
     return {"calibrator": calibrator, "threshold": threshold,
-            **_metrics_at(y, calibrated, threshold)}
+            **metrics_at(y, calibrated, threshold)}
 
 
 def evaluate_all(results: dict, X_train, y_train, progress_callback=None, groups=None) -> dict:
@@ -152,7 +152,7 @@ def calibration_error(y_true, y_prob) -> float:
 def evaluate_holdout(model: CalibratedModel, threshold: float, X_test, y_test) -> dict:
     y_prob = model.predict_proba(X_test)[:, 1]
     return {
-        **_metrics_at(y_test, y_prob, threshold),
+        **metrics_at(y_test, y_prob, threshold),
         "brier": float(brier_score_loss(y_test, y_prob)),
         "calibration_error": calibration_error(y_test, y_prob),
         "mean_probability": float(y_prob.mean()),

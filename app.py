@@ -619,6 +619,93 @@ def _show_drift(report):
         st.dataframe(table, width="stretch", hide_index=True)
 
 
+def _outcomes_section(model, prefix: str = ""):
+    """Compare the model's scores for customers whose outcome is now known with what really happened."""
+    from src.data_loader import load_uploaded_file
+    from src.errors import ChurnAppError
+    from src.outcomes import LEVEL_GAP, MIN_CUSTOMERS, MIN_EACH_OUTCOME, RANKING_DROP
+    from src.pipeline_builder import suggest_positive_label, target_labels
+
+    st.markdown(
+        "Once the outcome period is over, upload the customers you scored earlier with a column "
+        "saying who really left. This is the only way to know the model is still right, so do it "
+        "every month or quarter."
+    )
+    upload = st.file_uploader(
+        "Customers with their real outcome (CSV or Excel)", type=["csv", "xlsx", "xls"],
+        key=f"{prefix}uploader_outcomes",
+    )
+    if upload is None:
+        return
+    try:
+        df = load_uploaded_file(upload)
+    except ChurnAppError as e:
+        st.error(str(e))
+        return
+
+    columns = list(df.columns)
+    two_valued = [c for c in columns if len(target_labels(df[c])) == 2]
+    if not two_valued:
+        st.error("No column with two values was found. Add a column saying who left, such as Yes/No.")
+        return
+    c1, c2, c3 = st.columns([2, 2, 2])
+    outcome_col = c1.selectbox("Column with what really happened", two_valued, key=f"{prefix}outcome_col")
+    labels = [str(v) for v in target_labels(df[outcome_col])]
+    suggested, _ = suggest_positive_label(df[outcome_col], outcome_col)
+    left_label = c2.selectbox("Value that means the customer left", labels,
+                              index=labels.index(str(suggested)), key=f"{prefix}outcome_label")
+    as_of = None
+    if model.artifact.schema.has_dates and not model.artifact.schema.as_of_column:
+        latest = model.artifact.schema.latest_date(df) or pd.Timestamp.today().normalize()
+        as_of = pd.Timestamp(c3.date_input(
+            "Date the customers were scored", value=latest.date(), key=f"{prefix}outcome_as_of",
+            help="Days are counted back from this date, as they were when the customers were scored."))
+
+    if not st.button("📊 Check The Model", key=f"{prefix}check_outcomes"):
+        return
+    positive = target_labels(df[outcome_col])[labels.index(left_label)]
+    try:
+        with st.spinner("Scoring these customers and comparing with what happened…"):
+            report = model.artifact.check_outcomes(df, outcome_col, positive, model.holdout, as_of=as_of)
+    except ChurnAppError as e:
+        st.error(str(e))
+        return
+
+    if report.too_few:
+        st.info(
+            f"{report.n_customers:,} customers with {report.n_churned:,} leavers are too few to judge. "
+            f"At least {MIN_CUSTOMERS} customers and {MIN_EACH_OUTCOME} of each outcome are needed."
+        )
+        return
+
+    then, now = report.then, report.now
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("ROC-AUC", f"{now['roc_auc']:.3f}", delta=f"{now['roc_auc'] - then['roc_auc']:+.3f} vs training",
+              help=f"95% range from resampling: {report.roc_interval[0]:.3f} to {report.roc_interval[1]:.3f}.")
+    m2.metric("PR-AUC", f"{now['pr_auc']:.3f}", delta=f"{now['pr_auc'] - then['pr_auc']:+.3f} vs training",
+              help="Depends on the churn rate, so it moves when the churn rate moves.")
+    m3.metric("Recall", f"{now['recall']:.1%}", delta=f"{(now['recall'] - then['recall']) * 100:+.1f} pp vs training")
+    m4.metric("Predicted vs Actual Churn", f"{report.mean_predicted:.1%} vs {report.actual_rate:.1%}")
+
+    if report.ranking_worse:
+        st.warning(
+            f"🔁 **Retrain the model.** It separates leavers from stayers less well than when it was "
+            f"trained (ROC-AUC {now['roc_auc']:.3f} against {then['roc_auc']:.3f}, a drop of more than "
+            f"{RANKING_DROP}). What drives churn has probably changed."
+        )
+    elif report.level_off:
+        st.warning(
+            f"🔁 **Retrain the model.** It still ranks customers well, but it expected "
+            f"{report.mean_predicted:.1%} to leave and {report.actual_rate:.1%} did. The churn rate has "
+            f"moved by more than {LEVEL_GAP:.0%}, so the probabilities and the money estimates are off."
+        )
+    else:
+        st.success(
+            f"✅ **The model is holding up.** On {report.n_customers:,} customers whose outcome is known "
+            f"it ranks as well as when it was trained, and its probabilities match what happened."
+        )
+
+
 def _show_lift(holdout: dict, n_holdout: int):
     """How much of the churn a campaign reaches when it can only contact the riskiest few."""
     _sec("🎯", "Who To Contact First")
@@ -740,6 +827,9 @@ def _saved_model_tab():
     st.divider()
     _sec("🔮", "Predict New Customers")
     _predict_section(saved, prefix="saved_")
+    st.divider()
+    _sec("📊", "Check Past Predictions Against What Happened")
+    _outcomes_section(saved, prefix="saved_")
 
 
 def _predict_section(model, prefix: str = ""):
@@ -1290,6 +1380,9 @@ with _tab_pipeline:
         _sec("🔮", "Predict New Customers")
         from src.model_store import SavedModel
         _predict_section(SavedModel.from_run(st.session_state.run))
+        st.divider()
+        _sec("📊", "Check Past Predictions Against What Happened")
+        _outcomes_section(SavedModel.from_run(st.session_state.run))
 
     st.divider()
     st.caption(
