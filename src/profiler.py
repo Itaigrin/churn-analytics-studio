@@ -118,9 +118,6 @@ def profile_dataset(
         t = info["detected_type"]
         if t == "datetime":
             report["datetime_cols"].append(col)
-            report["general_warnings"].append(
-                f"📅 **{col}** is a date. Dates are not used as model inputs yet, so it was left out."
-            )
         elif t == "boolean":
             report["boolean_cols"].append(col)
         elif t == "numeric":
@@ -194,7 +191,7 @@ def _profile_column(s: pd.Series, name: str = "") -> dict:
         info["detected_type"] = "datetime"
         return info
 
-    if is_text_column(s) and _looks_like_dates(non_null):
+    if is_text_column(s) and looks_like_dates(non_null):
         info["detected_type"] = "datetime"
         return info
 
@@ -263,7 +260,7 @@ def _profile_column(s: pd.Series, name: str = "") -> dict:
     return info
 
 
-def _looks_like_dates(values: pd.Series) -> bool:
+def looks_like_dates(values: pd.Series) -> bool:
     sample = values.astype(str).str.strip().head(200)
     if sample.map(lambda v: bool(_DATE_RE.match(v))).mean() < 0.90:
         return False

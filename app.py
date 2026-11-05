@@ -170,7 +170,8 @@ def _estimate_runtime(df: pd.DataFrame, selected_models: list,
 
 
 def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: list,
-                  budget: dict | None, positive_label, exclude_cols: list):
+                  budget: dict | None, positive_label, exclude_cols: list,
+                  as_of=None, split_by=None):
     """Runs the training flow and stores the outcome in st.session_state."""
     from src.errors import ChurnAppError
     from src.workflow import run_training
@@ -202,6 +203,8 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
             positive_label=positive_label,
             exclude_cols=exclude_cols,
             progress=_render,
+            as_of=as_of,
+            split_by=split_by,
         )
     except ChurnAppError as exc:
         prog_container.empty()
@@ -252,9 +255,8 @@ def _show_results():
     secs = int(run.runtime_seconds % 60)
     st.caption(f"⏱️ Total pipeline runtime: **{mins}m {secs}s**")
     st.markdown(
-        f"Measured on **{run.n_holdout:,} customers** held back from the start. They played no "
-        f"part in training, tuning, choosing the model or setting the threshold, so these numbers "
-        f"are the fair estimate for new customers from the same population."
+        f"Measured on {run.holdout_description}. They played no part in training, tuning, choosing "
+        f"the model or setting the threshold, so these numbers are the fair estimate for new customers."
     )
 
     _unseen_help = f"Measured on {run.n_holdout:,} customers the model had never seen."
@@ -518,6 +520,50 @@ def _show_guide():
     )
 
 
+def _date_options(df: pd.DataFrame, target_col: str, id_col):
+    """How dates are read, and whether the model is tested on later customers."""
+    from src.workflow import date_columns
+
+    cache_key = (st.session_state.get("_df_hash"), target_col, id_col)
+    if st.session_state.get("_dates_key") != cache_key:
+        st.session_state["_date_cols"] = date_columns(df, target_col, id_col)
+        st.session_state["_dates_key"] = cache_key
+    dates = st.session_state["_date_cols"]
+    if not dates:
+        return None, None
+
+    key = f"{st.session_state.get('_df_hash')}_{target_col}"
+    with st.expander("📅 Dates and testing", expanded=True):
+        st.markdown(
+            f"Date columns found: **{', '.join(dates)}**. Each one is used as the number of days "
+            "before a reference date, such as how long ago a customer last logged in."
+        )
+        reference = st.radio(
+            "Count days back from",
+            ["The latest date in the file", "A date I choose", "Each row's own date, from a column"],
+            key=f"as_of_mode_{key}",
+            help="Use the day the data was taken. If the file holds several monthly snapshots, "
+                 "pick the column with each row's snapshot date.",
+        )
+        as_of = None
+        if reference == "A date I choose":
+            as_of = pd.Timestamp(st.date_input("Reference date", key=f"as_of_date_{key}"))
+        elif reference.startswith("Each row"):
+            as_of = st.selectbox("Column with each row's date", dates, key=f"as_of_col_{key}")
+
+        test_on = st.radio(
+            "Test the model on",
+            ["Random customers", "The most recent customers"],
+            key=f"split_mode_{key}",
+            help="Testing on the most recent customers shows how the model does on the future, "
+                 "which is how it will be used. It is usually a little lower than a random test.",
+        )
+        split_by = None
+        if test_on == "The most recent customers":
+            split_by = st.selectbox("Date that orders the customers", dates, key=f"split_col_{key}")
+    return as_of, split_by
+
+
 def _show_lift(holdout: dict, n_holdout: int):
     """How much of the churn a campaign reaches when it can only contact the riskiest few."""
     _sec("🎯", "Who To Contact First")
@@ -697,6 +743,18 @@ def _predict_section(model, prefix: str = ""):
     report = state[report_name]
     st.success(f"✅ Loaded **{len(df_new):,}** new customers")
 
+    as_of = None
+    if artifact.schema.has_dates:
+        if artifact.schema.as_of_column:
+            st.caption(f"📅 Days are counted back from each row's **{artifact.schema.as_of_column}**.")
+        else:
+            latest = artifact.schema.latest_date(df_new) or pd.Timestamp.today().normalize()
+            as_of = pd.Timestamp(st.date_input(
+                "📅 Count days back from", value=latest.date(), key=f"{prefix}as_of_{state[file_key_name]}",
+                help="The date this file describes, usually the day it was exported. "
+                     "It starts at the latest date in the file.",
+            ))
+
     allow_missing = True
     if report.missing:
         st.error(
@@ -788,9 +846,9 @@ def _predict_section(model, prefix: str = ""):
     if st.button("🔮 Predict Churn", type="primary", key=f"{prefix}predict_btn", disabled=not allow_missing):
         with st.spinner("Scoring customers and working out the reasons…"):
             try:
-                probabilities = artifact.predict_proba(df_new, allow_missing=True)
+                probabilities = artifact.predict_proba(df_new, allow_missing=True, as_of=as_of)
                 state[probs_name] = probabilities
-                state[reasons_name] = artifact.explain(df_new, probabilities)
+                state[reasons_name] = artifact.explain(df_new, probabilities, as_of=as_of)
             except ChurnAppError as e:
                 st.error(str(e))
                 return
@@ -1151,6 +1209,7 @@ with _tab_pipeline:
                 "| **CatBoost** | Dataset contains many categorical features (e.g. product category, region, plan type); handles them natively without encoding | Slowest to train; less benefit if data is mostly numeric |\n"
                 "\n💡 **Not sure?** Leave 'All Models' selected - the app will train all five and automatically pick the best one."
             )
+        as_of, split_by = _date_options(df, target_col, id_col)
     with btn_col:
         run = st.button("🚀 Run Pipeline", type="primary", width="stretch")
         _eta_low, _eta_high = _estimate_runtime(df, selected_models, budget)
@@ -1159,7 +1218,8 @@ with _tab_pipeline:
     if run:
         st.session_state.run = None
         st.session_state.training_done = None
-        _run_pipeline(df, id_col, target_col, selected_models, budget, positive_label, exclude_cols)
+        _run_pipeline(df, id_col, target_col, selected_models, budget, positive_label, exclude_cols,
+                      as_of, split_by)
 
     if st.session_state.training_done:
         _show_results()

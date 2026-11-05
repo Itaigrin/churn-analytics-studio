@@ -236,6 +236,53 @@ def parse_numeric_column(series: pd.Series, decimal: str = ".") -> pd.Series:
     return series.map(lambda v: parse_number(v, decimal)).astype(float)
 
 
+# ── Dates ─────────────────────────────────────────────────────────────────────
+
+_YEAR_FIRST = re.compile(r"^\d{4}[-/.]")
+_DAY_MONTH = re.compile(r"^(\d{1,2})[-/.](\d{1,2})[-/.]\d{2,4}")
+
+
+def detect_date_order(series: pd.Series) -> str:
+    """
+    How a column writes its dates: "yearfirst" (2024-03-01), "dayfirst" (01/03/2024)
+    or "monthfirst" (03/01/2024). A day above 12 anywhere in the column settles it;
+    when nothing does, the day is assumed to come first, as in Israel and Europe.
+    """
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "native"
+    text = series.dropna().astype(str).str.strip()
+    if text.empty:
+        return "dayfirst"
+    if text.str.match(_YEAR_FIRST).mean() >= 0.5:
+        return "yearfirst"
+    parts = text.str.extract(_DAY_MONTH).dropna().astype(int)
+    if (parts[0] > 12).any():
+        return "dayfirst"
+    if (parts[1] > 12).any():
+        return "monthfirst"
+    return "dayfirst"
+
+
+def parse_dates(series: pd.Series, order: str = "dayfirst") -> pd.Series:
+    """Parse one column of dates. Anything that is not a date becomes NaT."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        if getattr(series.dt, "tz", None) is not None:
+            series = series.dt.tz_localize(None)
+        return series.astype("datetime64[ns]")
+    if order == "native":
+        # Trained on real dates from Excel, now given text: read it as it is written
+        order = detect_date_order(series)
+    text = series.map(lambda v: np.nan if _is_blank(v) else str(v).strip())
+    parsed = pd.to_datetime(text, errors="coerce", format="mixed",
+                            dayfirst=order == "dayfirst", yearfirst=order == "yearfirst")
+    return parsed.astype("datetime64[ns]")
+
+
+def days_before(dates: pd.Series, as_of) -> pd.Series:
+    """Whole days from each date to the reference date, which can differ per row."""
+    return (as_of - dates).dt.days.astype(float)
+
+
 def is_text_column(series: pd.Series) -> bool:
     return (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)
             or isinstance(series.dtype, pd.CategoricalDtype))

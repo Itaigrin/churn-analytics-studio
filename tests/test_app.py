@@ -1,6 +1,7 @@
 """Drives the real app.py through a real file upload, as a user would."""
 import os
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -140,6 +141,30 @@ def test_the_profit_goal_sets_the_breakeven_threshold_and_shows_the_money(traine
     expected_gain = table["Churn Probability"] * 0.25 * 1000 - 50
     # The probability shown is rounded to 4 decimals, so allow for that
     assert (table["Expected Gain From Contact"] - expected_gain).abs().max() < 0.02
+
+
+def test_dates_can_be_used_and_the_model_tested_on_recent_customers():
+    from test_dates_and_splits import dated_customers
+    df = dated_customers(400)
+    df["Joined"] = (pd.Timestamp("2023-01-01") + pd.to_timedelta(range(len(df)), "D")).strftime("%Y-%m-%d")
+    at = start_app()
+    upload_file(at, 0, df.to_csv(index=False).encode())
+    assert "Date columns found" in text_of(at)
+    next(r for r in at.radio if r.label == "Test the model on").set_value("The most recent customers")
+    at.run()
+    next(b for b in at.selectbox if b.label == "Date that orders the customers").select("Joined")
+    run_pipeline(at)
+    assert not at.error, [e.value for e in at.error]
+    assert "most recent customers by" in text_of(at)
+
+    new = dated_customers(30, seed=7).drop(columns=["Churn"])
+    new["Joined"] = "2024-06-01"
+    upload_file(at, 1, new.to_csv(index=False).encode(), "new.csv")
+    assert any(d.label == "📅 Count days back from" for d in at.date_input)
+    next(b for b in at.button if "Predict Churn" in b.label).click()
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert {m.label: m.value for m in at.metric}["Total Customers"] == "30"
 
 
 def test_home_page_renders():

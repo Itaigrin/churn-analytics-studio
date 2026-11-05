@@ -6,7 +6,8 @@ measured is what users get.
 
 Order of events:
   1. Read the target, clean the file, profile it, screen for leaks, validate.
-  2. Freeze the schema and hold back 20% of customers, untouched.
+  2. Freeze the schema and hold back 20% of customers, untouched: at random, keeping
+     each customer's rows together, or the most recent customers by a date column.
   3. Plan features and tune every model on the remaining 80% only.
   4. Choose calibration, threshold and winner on out-of-fold predictions.
   5. Score the holdout once. These are the numbers reported to the user.
@@ -23,7 +24,7 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 from sklearn.base import clone
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 
 from .calibration import CalibratedModel
 from .config import (
@@ -35,8 +36,10 @@ from .evaluator import evaluate_all, evaluate_holdout, pick_best_model
 from .explain import MAX_CUSTOMERS, ColumnReference, Reason, build_reference, column_effects, top_reasons
 from .feature_engineering import FeatureSpec, apply_features, fit_feature_spec
 from .leakage import LeakFinding, scan_for_leakage
-from .pipeline_builder import convert_target, normalize_column_name, raw_clean
-from .profiler import profile_dataset
+from .pipeline_builder import (
+    convert_target, days_before, detect_date_order, normalize_column_name, parse_dates, raw_clean,
+)
+from .profiler import looks_like_dates, profile_dataset
 from .schema import ConformReport, DataSchema, build_schema, conform, require_usable
 from .trainer import train_all_models
 
@@ -53,16 +56,16 @@ class ChurnArtifact:
     model_columns: list[str]
     reference: dict[str, ColumnReference] = field(default_factory=dict)
 
-    def check(self, df_new: pd.DataFrame) -> ConformReport:
+    def check(self, df_new: pd.DataFrame, as_of=None) -> ConformReport:
         """What does not fit in this file, without scoring it."""
-        return conform(df_new, self.schema)[1]
+        return conform(df_new, self.schema, as_of)[1]
 
-    def predict_proba(self, df_new: pd.DataFrame, allow_missing: bool = False) -> np.ndarray:
+    def predict_proba(self, df_new: pd.DataFrame, allow_missing: bool = False, as_of=None) -> np.ndarray:
         """
-        Calibrated churn probability per customer. The result for a customer
-        depends only on that customer's own row, never on the rest of the file.
+        Calibrated churn probability per customer. Given the reference date, the result
+        for a customer depends only on that customer's own row, never on the rest of the file.
         """
-        X, report = conform(df_new, self.schema)
+        X, report = conform(df_new, self.schema, as_of)
         require_usable(report)
         if report.missing and not allow_missing:
             raise DataValidationError(
@@ -72,9 +75,9 @@ class ChurnArtifact:
         features = apply_features(X, self.feature_spec)[self.model_columns]
         return self.model.predict_proba(features)[:, 1]
 
-    def explain(self, df_new: pd.DataFrame, probabilities: np.ndarray) -> list[list[Reason]]:
+    def explain(self, df_new: pd.DataFrame, probabilities: np.ndarray, as_of=None) -> list[list[Reason]]:
         """The main reasons behind each customer's risk. Only the riskiest are explained."""
-        X, _ = conform(df_new, self.schema)
+        X, _ = conform(df_new, self.schema, as_of)
         riskiest = np.argsort(-probabilities)[:MAX_CUSTOMERS]
         subset = X.iloc[riskiest]
         effects = column_effects(
@@ -103,6 +106,7 @@ class TrainingRun:
     leak_findings: list[LeakFinding] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    holdout_description: str = ""
 
 
 def screen_columns(df: pd.DataFrame, target_col: str, id_col: Optional[str],
@@ -113,8 +117,19 @@ def screen_columns(df: pd.DataFrame, target_col: str, id_col: Optional[str],
         return []
     clean = raw_clean(df.loc[y.index].drop(columns=[target_col]))
     profile = profile_dataset(clean, target_col=None, id_col=_std(id_col))
-    columns = profile["numeric_cols"] + profile["boolean_cols"] + profile["categorical_cols"]
-    return scan_for_leakage(clean, y, columns)
+    return scan_for_leakage(_dates_as_days(clean, profile["datetime_cols"]), y, _candidates(profile))
+
+
+def date_columns(df: pd.DataFrame, target_col: str, id_col: Optional[str]) -> list[str]:
+    """
+    The date columns, by their names in the file. A date that is the same in every
+    row, such as the day of the snapshot, is listed too: it can be the reference date.
+    """
+    names = {normalize_column_name(c): c for c in df.columns}
+    clean = raw_clean(df.drop(columns=[target_col]))
+    profile = profile_dataset(clean, target_col=None, id_col=_std(id_col))
+    constant_dates = [c for c in profile["drop_cols"] if _is_date_column(clean, c)]
+    return [names[c] for c in profile["datetime_cols"] + constant_dates]
 
 
 def run_training(
@@ -126,10 +141,16 @@ def run_training(
     positive_label=None,
     exclude_cols: Optional[list[str]] = None,
     progress: Optional[Callable[[int, str], None]] = None,
+    as_of=None,
+    split_by: Optional[str] = None,
 ) -> TrainingRun:
     """
     Train, choose and report. exclude_cols is the user's decision on which columns
     to leave out; when it is None, every column the leak screen flags is left out.
+
+    as_of is what dates are counted back from: a date, the name of a date column
+    holding each row's own date, or None for the latest date in the file.
+    split_by names a date column; the most recent customers by it become the test set.
     """
     from .config import PRODUCTION_MODELS
 
@@ -154,10 +175,15 @@ def run_training(
     report(10, "Profiling the data and screening for leaks…")
     id_std = _std(id_col)
     profile = profile_dataset(clean, target_col=None, id_col=id_std)
-    candidates = profile["numeric_cols"] + profile["boolean_cols"] + profile["categorical_cols"]
+    as_of = normalize_column_name(as_of) if isinstance(as_of, str) else as_of
+    split_by = _std(split_by)
+    for col in (as_of, split_by):
+        # A snapshot date is often the same in every row, so profiling drops it as constant
+        if isinstance(col, str) and not (col in profile["datetime_cols"] or _is_date_column(clean, col)):
+            raise DataValidationError(f"'{col}' is not a date column, so it cannot be used as one.")
 
     if exclude_cols is None:
-        findings = scan_for_leakage(clean, y, candidates)
+        findings = scan_for_leakage(_dates_as_days(clean, profile["datetime_cols"]), y, _candidates(profile))
         excluded = [f.column for f in findings]
         for finding in findings:
             warnings.append(f"**{finding.column}** was left out: {finding.reason}.")
@@ -172,8 +198,16 @@ def run_training(
     if len(y) > VERY_LARGE_DATASET_ROWS:
         warnings.append(f"Very large dataset ({len(y):,} rows). Consider stratified sampling.")
 
-    schema = build_schema(df_features, profile)
-    X, _ = conform(df_features, schema)
+    schema = build_schema(df_features, profile, as_of=as_of)
+    X, conformed = conform(df_features, schema, None if isinstance(as_of, str) else as_of)
+    if schema.has_dates:
+        dated = [rule.name for rule in schema.rules.values() if rule.kind == "date"]
+        counted_from = (f"each row's **{conformed.as_of}**" if isinstance(conformed.as_of, str)
+                        else f"**{conformed.as_of:%Y-%m-%d}**")
+        notes.append(
+            f"📅 Dates are used as the number of days before {counted_from}: {', '.join(dated)}. "
+            "Check that none of them is recorded after the customer left, such as a cancellation date."
+        )
 
     churn_rate = float(y.mean())
     is_imbalanced = churn_rate < IMBALANCE_LOW or churn_rate > IMBALANCE_HIGH
@@ -184,8 +218,11 @@ def run_training(
         )
 
     report(15, "Holding back customers for the final test…")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
+    groups = _customer_groups(clean, id_std)
+    train_idx, test_idx, holdout_description = _split(df_features, y, groups, split_by)
+    X_train, X_test = X.loc[train_idx], X.loc[test_idx]
+    y_train, y_test = y.loc[train_idx], y.loc[test_idx]
+    groups_train = groups.loc[train_idx] if groups is not None else None
 
     report(20, "Creating features from the training customers only…")
     spec = fit_feature_spec(X_train, y_train, schema.of_kind("numeric"), schema.of_kind("boolean"))
@@ -210,12 +247,13 @@ def run_training(
         is_imbalanced=is_imbalanced,
         progress_callback=on_model_progress,
         budget=budget,
+        groups=groups_train,
     )
 
     def on_evaluation_progress(name, i, total):
         report(75 + int(i / max(total, 1) * 15), f"Comparing models fairly: **{name}** ({i + 1}/{total})…")
 
-    results = evaluate_all(results, X_train_f, y_train, on_evaluation_progress)
+    results = evaluate_all(results, X_train_f, y_train, on_evaluation_progress, groups_train)
     best_name = pick_best_model(results)
     best = results[best_name]
 
@@ -256,6 +294,7 @@ def run_training(
         leak_findings=findings,
         warnings=warnings,
         notes=notes,
+        holdout_description=holdout_description,
     )
 
 
@@ -263,9 +302,78 @@ def _std(col: Optional[str]) -> Optional[str]:
     return normalize_column_name(col) if col else None
 
 
+def _is_date_column(clean: pd.DataFrame, col: str) -> bool:
+    if col not in clean.columns:
+        return False
+    values = clean[col].dropna()
+    if pd.api.types.is_datetime64_any_dtype(values):
+        return len(values) > 0
+    return len(values) > 0 and looks_like_dates(values)
+
+
+def _candidates(profile: dict) -> list[str]:
+    return (profile["numeric_cols"] + profile["boolean_cols"]
+            + profile["categorical_cols"] + profile["datetime_cols"])
+
+
+def _dates_as_days(clean: pd.DataFrame, date_cols: list[str]) -> pd.DataFrame:
+    """Dates as days before the latest one, so the leak screen can read them as numbers."""
+    if not date_cols:
+        return clean
+    clean = clean.copy()
+    dates = {col: parse_dates(clean[col], detect_date_order(clean[col])) for col in date_cols}
+    latest = max(d.max() for d in dates.values())
+    for col, values in dates.items():
+        clean[col] = days_before(values, latest)
+    return clean
+
+
+def _customer_groups(clean: pd.DataFrame, id_col: Optional[str]) -> Optional[pd.Series]:
+    """Customer IDs, when some customers have several rows. Those rows must stay together."""
+    if not id_col or id_col not in clean.columns or not clean[id_col].duplicated().any():
+        return None
+    return clean[id_col].astype(str)
+
+
+def _split(df_features: pd.DataFrame, y: pd.Series, groups: Optional[pd.Series],
+           split_by: Optional[str]) -> tuple[pd.Index, pd.Index, str]:
+    """Which customers train the model and which are held back to test it."""
+    if split_by:
+        raw = df_features[[c for c in df_features.columns if normalize_column_name(c) == split_by][0]]
+        dates = parse_dates(raw, detect_date_order(raw))
+        # Undated rows can only be used for training
+        order = dates.fillna(pd.Timestamp.min).sort_values(kind="stable").index
+        n_test = int(round(len(order) * TEST_SIZE))
+        train_idx, test_idx = order[:-n_test], order[-n_test:]
+        _require_both_outcomes(y.loc[test_idx], "most recent customers")
+        start, end = dates.loc[test_idx].min(), dates.loc[test_idx].max()
+        return train_idx, test_idx, (
+            f"the {n_test:,} most recent customers by **{split_by}** ({start:%Y-%m-%d} to {end:%Y-%m-%d}). "
+            "They are later than every customer the model learned from, as new customers will be"
+        )
+    if groups is not None:
+        folds = StratifiedGroupKFold(n_splits=round(1 / TEST_SIZE), shuffle=True, random_state=RANDOM_STATE)
+        train_pos, test_pos = next(folds.split(y, y, groups))
+        return y.index[train_pos], y.index[test_pos], (
+            f"{len(test_pos):,} rows of customers the model never saw. Customers with several rows "
+            "were kept whole, so none of them is in both training and testing"
+        )
+    train_idx, test_idx = train_test_split(
+        y.index, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
+    return train_idx, test_idx, f"{len(test_idx):,} customers held back from the start"
+
+
+def _require_both_outcomes(y_test: pd.Series, who: str) -> None:
+    if y_test.nunique() < 2 or y_test.value_counts().min() < 5:
+        raise DataValidationError(
+            f"The {who} include fewer than 5 customers of one outcome, so they cannot test the "
+            "model. Test on random customers instead, or add more recent history."
+        )
+
+
 def _remove_columns(profile: dict, columns: list[str]) -> None:
     for col in columns:
-        for kind in ("numeric_cols", "boolean_cols", "categorical_cols"):
+        for kind in ("numeric_cols", "boolean_cols", "categorical_cols", "datetime_cols"):
             if col in profile[kind]:
                 profile[kind].remove(col)
                 profile["drop_cols"][col] = "Left out by the leak check"
@@ -295,7 +403,7 @@ def _validate_labels(y: pd.Series, warnings: list[str]) -> None:
 
 
 def _validate_columns(profile: dict) -> None:
-    if not (profile["numeric_cols"] or profile["boolean_cols"] or profile["categorical_cols"]):
+    if not _candidates(profile):
         raise DataValidationError(
             "No usable columns are left after removing IDs and empty or constant columns."
         )
@@ -307,7 +415,6 @@ def _check_duplicates(clean: pd.DataFrame, id_col: Optional[str], warnings: list
     n_repeated = int(clean[id_col].duplicated().sum())
     if n_repeated:
         warnings.append(
-            f"{n_repeated:,} rows repeat a customer ID that appears earlier in the file. A customer "
-            "can then land in both training and testing, which makes the results look better than "
-            "they really are. Use one row per customer."
+            f"{n_repeated:,} rows repeat a customer ID that appears earlier in the file. All rows of "
+            "a customer are kept on the same side when testing, so the results are not inflated by it."
         )
