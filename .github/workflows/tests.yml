@@ -10,8 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 is what the HuggingFace Space runs
-        python-version: ["3.12", "3.13"]
+        # 3.13 is what the test app runs; 3.14 is what the public Streamlit app is set to
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
