@@ -14,7 +14,26 @@ The training flow itself lives in src/workflow.py, which has no UI code.
 
 import sys
 import os
+import hashlib
+from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
+
+
+def _drop_stale_modules():
+    """
+    Streamlit Cloud updates the files of a running app without restarting Python, so
+    app.py is new while the src modules already imported stay old, and an import of
+    anything added since fails. When the src files change, forget the old copies.
+    """
+    stamp = hashlib.sha256(b"".join(p.read_bytes() for p in sorted(Path(__file__).parent.glob("src/*.py"))))
+    if getattr(sys.modules.get("src"), "_source_stamp", stamp.digest()) != stamp.digest():
+        for name in [m for m in sys.modules if m == "src" or m.startswith("src.")]:
+            del sys.modules[name]
+    import src
+    src._source_stamp = stamp.digest()
+
+
+_drop_stale_modules()
 
 # Prevent SIGSEGV (exit code 139) on cloud: OpenMP oversubscription + fork
 # corrupts the heap. Must run BEFORE numpy / lightgbm / xgboost are imported.
@@ -564,6 +583,40 @@ def _date_options(df: pd.DataFrame, target_col: str, id_col):
     return as_of, split_by
 
 
+def _show_drift(report):
+    """Whether these customers still look like the ones the model learned from."""
+    from src.monitoring import SHIFT_PSI, WATCH_PSI
+
+    if report is None:
+        return
+    st.markdown("#### Has The Data Changed Since Training?")
+    if report.too_few:
+        st.info(f"{report.n_customers} customers are too few to compare with the training data reliably.")
+        return
+    if report.retrain_recommended:
+        moved = ", ".join(f"**{c}**" for c in report.shifted) or "none of the single columns"
+        st.warning(
+            f"🔁 **These customers differ clearly from the training data** (score shift "
+            f"{report.score_psi:.2f}; columns that moved: {moved}). If this file is a segment you chose, "
+            "such as one region, that is expected and the model still applies. If it is your whole "
+            "customer base, the customers have changed: **train the model again on recent history**."
+        )
+    elif report.score_psi > WATCH_PSI or not report.columns.empty and report.columns["PSI"].max() > WATCH_PSI:
+        st.info(
+            f"🟡 Some change since training (score shift {report.score_psi:.2f}). "
+            "Nothing that requires retraining yet, but keep an eye on the columns marked below."
+        )
+    else:
+        st.success(f"✅ These customers look like the training customers (score shift {report.score_psi:.2f}).")
+    with st.expander("Change per column (PSI)"):
+        st.caption(
+            f"PSI compares how this file's values spread across the training ranges. Below {WATCH_PSI} is "
+            f"stable, above {SHIFT_PSI} is a real shift."
+        )
+        table = report.columns.assign(PSI=report.columns["PSI"].map("{:.3f}".format))
+        st.dataframe(table, width="stretch", hide_index=True)
+
+
 def _show_lift(holdout: dict, n_holdout: int):
     """How much of the churn a campaign reaches when it can only contact the riskiest few."""
     _sec("🎯", "Who To Contact First")
@@ -702,6 +755,7 @@ def _predict_section(model, prefix: str = ""):
     report_name   = f"{prefix}_pred_report"
     probs_name    = f"{prefix}pred_raw_probs"
     reasons_name  = f"{prefix}pred_reasons"
+    drift_name    = f"{prefix}pred_drift"
 
     # ── File upload ───────────────────────────────────────────────────────────
     c1, c2 = st.columns([2, 1])
@@ -849,6 +903,7 @@ def _predict_section(model, prefix: str = ""):
                 probabilities = artifact.predict_proba(df_new, allow_missing=True, as_of=as_of)
                 state[probs_name] = probabilities
                 state[reasons_name] = artifact.explain(df_new, probabilities, as_of=as_of)
+                state[drift_name] = artifact.monitor(df_new, probabilities, as_of=as_of)
             except ChurnAppError as e:
                 st.error(str(e))
                 return
@@ -913,6 +968,8 @@ def _predict_section(model, prefix: str = ""):
             f"✅ This file's average predicted risk ({expected:.1%}) is in line with the historical "
             f"churn rate ({historic:.1%})."
         )
+
+    _show_drift(state.get(drift_name))
 
     st.divider()
 

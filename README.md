@@ -28,6 +28,7 @@ Upload your historical customer data, train 5 production-grade ML models, and ge
 - Save a trained model and score new customers later without retraining. Files are signed, so only this installation's own files are opened
 - The main reasons behind each flagged customer's risk, in your own columns
 - Dates become days before a reference date (the day the data was taken, a chosen date, or each row's own snapshot date), and the model can be tested on the most recent customers. A customer with several rows is never in both training and testing
+- Monitoring: every scored file is compared with the training customers, column by column and on the scores (PSI), with a clear call when the model should be retrained
 - The money side: enter what a customer is worth, what a contact costs and how many churners it keeps, and get the most profitable threshold, the expected net result, and how many churners the riskiest 10% hold
 
 ## Development
