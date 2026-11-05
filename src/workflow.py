@@ -32,6 +32,7 @@ from .config import (
 )
 from .errors import DataValidationError
 from .evaluator import evaluate_all, evaluate_holdout, pick_best_model
+from .explain import MAX_CUSTOMERS, ColumnReference, Reason, build_reference, column_effects, top_reasons
 from .feature_engineering import FeatureSpec, apply_features, fit_feature_spec
 from .leakage import LeakFinding, scan_for_leakage
 from .pipeline_builder import convert_target, normalize_column_name, raw_clean
@@ -50,6 +51,7 @@ class ChurnArtifact:
     model: CalibratedModel
     threshold: float
     model_columns: list[str]
+    reference: dict[str, ColumnReference] = field(default_factory=dict)
 
     def check(self, df_new: pd.DataFrame) -> ConformReport:
         """What does not fit in this file, without scoring it."""
@@ -69,6 +71,21 @@ class ChurnArtifact:
             )
         features = apply_features(X, self.feature_spec)[self.model_columns]
         return self.model.predict_proba(features)[:, 1]
+
+    def explain(self, df_new: pd.DataFrame, probabilities: np.ndarray) -> list[list[Reason]]:
+        """The main reasons behind each customer's risk. Only the riskiest are explained."""
+        X, _ = conform(df_new, self.schema)
+        riskiest = np.argsort(-probabilities)[:MAX_CUSTOMERS]
+        subset = X.iloc[riskiest]
+        effects = column_effects(
+            subset, self.reference, self.feature_spec, self.model_columns,
+            lambda features: self.model.predict_proba(features)[:, 1],
+            probabilities[riskiest],
+        )
+        reasons: list[list[Reason]] = [[] for _ in range(len(X))]
+        for position, customer_reasons in zip(riskiest, top_reasons(effects, subset, self.reference)):
+            reasons[position] = customer_reasons
+        return reasons
 
 
 @dataclass
@@ -221,6 +238,7 @@ def run_training(
         model=CalibratedModel(final_pipeline, best["calibrator"]),
         threshold=best["threshold"],
         model_columns=list(X_all.columns),
+        reference=build_reference(X_train, schema.of_kind("numeric")),
     )
 
     report(100, "Done")

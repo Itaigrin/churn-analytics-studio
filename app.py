@@ -218,10 +218,12 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
         run               = run,
         training_done     = True,
         # Clear prediction cache so the next file is checked against the new model
+        model_file        = None,
         _pred_file_key    = None,
         _pred_df_new      = None,
         _pred_report      = None,
         pred_raw_probs    = None,
+        pred_reasons      = None,
     ))
     time.sleep(0.5)
     prog_container.empty()
@@ -302,6 +304,8 @@ def _show_results():
 
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
     _show_professional_analysis(best_name, holdout)
+
+    _save_model_section(run)
 
 
 def _explain_roc(roc: float) -> str:
@@ -512,15 +516,101 @@ def _show_guide():
     )
 
 
-def _predict_section():
-    """New customer prediction UI."""
+_SAVING_OFF = (
+    "Saving models is turned off here. It needs a private signing key: set `CHURN_MODEL_KEY` "
+    "in the app's secrets. Private installations create their own key automatically."
+)
+
+
+def _save_model_section(run):
+    """Lets the user keep the trained model and use it again without retraining."""
+    from src.model_store import SavedModel, save_model, signing_key
+
+    _sec("💾", "Save This Model")
+    key = signing_key()
+    if key is None:
+        st.info(_SAVING_OFF)
+        return
+
+    st.caption(
+        "Keep this file to score new customers later without training again. It holds the model and "
+        "the category values of your columns, but no customer rows. Treat it as confidential."
+    )
+    if st.session_state.get("model_file") is None:
+        if st.button("Prepare Model File", key="prepare_model"):
+            with st.spinner("Packing the model…"):
+                st.session_state.model_file = save_model(SavedModel.from_run(run), key)
+            st.rerun()
+    else:
+        st.download_button(
+            "⬇️ Download Model File",
+            data=st.session_state.model_file,
+            file_name=f"churn_model_{run.best_model_name.lower().replace(' ', '_')}.churnmodel",
+            mime="application/octet-stream",
+            on_click="ignore",
+        )
+
+
+def _saved_model_tab():
+    """Score new customers with a model saved earlier."""
+    from src.errors import ChurnAppError
+    from src.model_store import load_model, signing_key
+
+    st.markdown("## 💾 Use a Saved Model")
+    st.markdown("Upload a model file saved from this app to score new customers without training again.")
+    key = signing_key()
+    if key is None:
+        st.info(_SAVING_OFF)
+        return
+
+    model_file = st.file_uploader("Model file", type=["churnmodel"], key="uploader_model")
+    if model_file is not None:
+        file_key = hash(model_file.getvalue())
+        if st.session_state.get("_saved_model_key") != file_key:
+            for name in ("_pred_file_key", "_pred_df_new", "_pred_report", "pred_raw_probs", "pred_reasons"):
+                st.session_state[f"saved_{name}"] = None
+            st.session_state.saved_model = None
+            try:
+                st.session_state.saved_model = load_model(model_file.getvalue(), key)
+            except ChurnAppError as e:
+                st.error(str(e))
+                return
+            st.session_state._saved_model_key = file_key
+
+    saved = st.session_state.get("saved_model")
+    if saved is None:
+        return
+
+    holdout = saved.holdout
+    st.success(f"✅ Loaded **{saved.model_name}**, trained {saved.trained_at[:10]} on {saved.n_train:,} customers")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("PR-AUC", f"{holdout['pr_auc']:.4f}", help=f"Measured on {saved.n_holdout:,} unseen customers when it was trained.")
+    k2.metric("Recall", f"{holdout['recall']:.4f}", help=f"Measured on {saved.n_holdout:,} unseen customers when it was trained.")
+    k3.metric("ROC-AUC", f"{holdout['roc_auc']:.4f}", help=f"Measured on {saved.n_holdout:,} unseen customers when it was trained.")
+    st.caption(
+        "These numbers are from when the model was trained. Customers change over time, "
+        "so retrain regularly on recent history."
+    )
+    st.divider()
+    _sec("🔮", "Predict New Customers")
+    _predict_section(saved, prefix="saved_")
+
+
+def _predict_section(model, prefix: str = ""):
+    """New customer prediction UI, for a model just trained or loaded from a file."""
     from src.data_loader import load_uploaded_file
     from src.errors import ChurnAppError
+    from src.explain import MAX_CUSTOMERS, TOP_REASONS, format_reason
     from src.schema import require_usable
     from src.utils import to_csv_bytes
 
-    run      = st.session_state.run
-    artifact = run.artifact
+    artifact = model.artifact
+    state = st.session_state
+    file_key_name = f"{prefix}_pred_file_key"
+    df_name       = f"{prefix}_pred_df_new"
+    report_name   = f"{prefix}_pred_report"
+    probs_name    = f"{prefix}pred_raw_probs"
+    reasons_name  = f"{prefix}pred_reasons"
 
     # ── File upload ───────────────────────────────────────────────────────────
     c1, c2 = st.columns([2, 1])
@@ -528,7 +618,7 @@ def _predict_section():
         new_file = st.file_uploader(
             "Upload new customers file (CSV or Excel) - WITHOUT the churn column",
             type=["csv", "xlsx", "xls"],
-            key="uploader_new",
+            key=f"{prefix}uploader_new",
         )
     with c2:
         st.info(
@@ -539,14 +629,14 @@ def _predict_section():
     if new_file is None:
         # HuggingFace resets the file uploader on every slider rerun.
         # If we already loaded the file into session_state, keep using it.
-        if st.session_state.get("_pred_df_new") is None:
-            st.session_state.pred_raw_probs = None
+        if state.get(df_name) is None:
+            state[probs_name] = None
             return
     else:
         file_key = hash(new_file.getvalue())
-        if st.session_state.get("_pred_file_key") != file_key:
-            st.session_state.pred_raw_probs = None   # clear old results on new file
-            st.session_state._pred_df_new = None
+        if state.get(file_key_name) != file_key:
+            state[probs_name] = None   # clear old results on new file
+            state[df_name] = None
             try:
                 df_new = load_uploaded_file(new_file)
                 report = artifact.check(df_new)
@@ -554,12 +644,12 @@ def _predict_section():
             except ChurnAppError as e:
                 st.error(str(e))
                 return
-            st.session_state._pred_file_key = file_key
-            st.session_state._pred_df_new   = df_new.reset_index(drop=True)
-            st.session_state._pred_report   = report
+            state[file_key_name] = file_key
+            state[df_name]       = df_new.reset_index(drop=True)
+            state[report_name]   = report
 
-    df_new = st.session_state._pred_df_new
-    report = st.session_state._pred_report
+    df_new = state[df_name]
+    report = state[report_name]
     st.success(f"✅ Loaded **{len(df_new):,}** new customers")
 
     allow_missing = True
@@ -569,13 +659,13 @@ def _predict_section():
             f"{', '.join(report.missing)}. Predictions without them are less accurate."
         )
         allow_missing = st.checkbox(
-            "Score anyway, treating the missing columns as unknown", key="pred_allow_missing")
+            "Score anyway, treating the missing columns as unknown", key=f"{prefix}pred_allow_missing")
     for _note in report.warnings():
         st.warning(_note)
 
     # ── Threshold selector ────────────────────────────────────────────────────
     auto_thr  = round(float(artifact.threshold), 2)
-    thr_curve = run.holdout["threshold_curve"]
+    thr_curve = model.holdout["threshold_curve"]
 
     st.markdown("#### Sensitivity Setting")
     sl_col, hint_col = st.columns([3, 2])
@@ -584,6 +674,7 @@ def _predict_section():
             "Decision Threshold",
             min_value=0.02, max_value=0.90,
             value=auto_thr, step=0.01,
+            key=f"{prefix}threshold_slider",
             help=(
                 "A customer is flagged when their churn probability reaches this value.\n\n"
                 "Lower → more customers flagged (higher Recall, more false alarms).\n\n"
@@ -613,10 +704,12 @@ def _predict_section():
             st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
 
     # ── Predict button ────────────────────────────────────────────────────────
-    if st.button("🔮 Predict Churn", type="primary", key="predict_btn", disabled=not allow_missing):
-        with st.spinner("Running predictions…"):
+    if st.button("🔮 Predict Churn", type="primary", key=f"{prefix}predict_btn", disabled=not allow_missing):
+        with st.spinner("Scoring customers and working out the reasons…"):
             try:
-                st.session_state.pred_raw_probs = artifact.predict_proba(df_new, allow_missing=True)
+                probabilities = artifact.predict_proba(df_new, allow_missing=True)
+                state[probs_name] = probabilities
+                state[reasons_name] = artifact.explain(df_new, probabilities)
             except ChurnAppError as e:
                 st.error(str(e))
                 return
@@ -627,7 +720,7 @@ def _predict_section():
                 return
 
     # ── Results (apply current threshold to stored probabilities) ─────────────
-    raw_probs = st.session_state.get("pred_raw_probs")
+    raw_probs = state.get(probs_name)
     if raw_probs is None:
         return
 
@@ -644,7 +737,7 @@ def _predict_section():
 
     # ── Risk compared with history ────────────────────────────────────────────
     expected = float(raw_probs.mean())
-    historic = run.churn_rate
+    historic = model.churn_rate
     diff_pp  = (expected - historic) * 100
     # A small file wanders by chance, so the alert scales with its size
     tolerance_pp = max(5.0, 300 * float(raw_probs.std()) / np.sqrt(max(total, 1)))
@@ -677,7 +770,18 @@ def _predict_section():
     display_df = df_new.copy()
     display_df["Flagged At Risk"]   = np.where(flagged_mask, "Yes", "No")
     display_df["Churn Probability"] = np.round(raw_probs, 4)
+    for i in range(TOP_REASONS):
+        display_df[f"Reason {i + 1}"] = [
+            format_reason(reasons[i]) if flagged and i < len(reasons) else ""
+            for flagged, reasons in zip(flagged_mask, state[reasons_name])
+        ]
 
+    st.caption(
+        "Reasons are shown for flagged customers. **+18 pts** means this value adds about 18 percentage "
+        "points of risk, compared with the range of values other customers have. Each column is "
+        "checked on its own, so the points don't add up to the total risk."
+        + (f" Only the {MAX_CUSTOMERS:,} riskiest customers are explained." if total > MAX_CUSTOMERS else "")
+    )
     st.dataframe(display_df, width="stretch", hide_index=True)
 
     st.download_button(
@@ -685,6 +789,7 @@ def _predict_section():
         data=to_csv_bytes(display_df),
         file_name="churn_predictions.csv",
         mime="text/csv",
+        key=f"{prefix}download_predictions",
     )
 
 
@@ -703,10 +808,13 @@ st.title("📊 Churn Analytics Studio")
 st.caption("AI & Machine Learning Powered Customer Churn Prediction Platform")
 st.divider()
 
-_tab_pipeline, _tab_guide = st.tabs(["🚀 Pipeline", "📖 How It Works"])
+_tab_pipeline, _tab_saved, _tab_guide = st.tabs(["🚀 Pipeline", "💾 Saved Model", "📖 How It Works"])
 
 with _tab_guide:
     _show_guide()
+
+with _tab_saved:
+    _saved_model_tab()
 
 with _tab_pipeline:
     # ── Step 1: Upload ────────────────────────────────────────────────────────
@@ -969,7 +1077,8 @@ with _tab_pipeline:
     # ── Predict New Customers ─────────────────────────────────────────────────
     if st.session_state.training_done:
         _sec("🔮", "Predict New Customers")
-        _predict_section()
+        from src.model_store import SavedModel
+        _predict_section(SavedModel.from_run(st.session_state.run))
 
     st.divider()
     st.caption(

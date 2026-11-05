@@ -51,6 +51,71 @@ def trained_app():
     return at
 
 
+def _uploader(at, label):
+    return next(u for u in at.file_uploader if u.label.startswith(label))
+
+
+def _downloads(at):
+    return [d.proto.label for d in at.get("download_button")]
+
+
+def test_flagged_customers_show_their_reasons(trained_app):
+    new = make_customers(50, seed=5).drop(columns=["Churn"])
+    new["Tenure"] = 2
+    new["Support Calls"] = 6
+    upload_file(trained_app, 1, new.to_csv(index=False).encode(), "risky.csv")
+    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    trained_app.run()
+    table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
+    flagged = table[table["Flagged At Risk"] == "Yes"]
+    assert len(flagged) > 0
+    assert flagged["Reason 1"].str.contains("pts").any()
+    assert (table.loc[table["Flagged At Risk"] == "No", "Reason 1"] == "").all()
+
+
+def test_a_model_saved_in_the_app_works_after_a_restart(trained_app, monkeypatch):
+    monkeypatch.setenv("CHURN_MODEL_KEY", "app-test-key")
+    trained_app.run()
+    next(b for b in trained_app.button if b.label == "Prepare Model File").click()
+    trained_app.run()
+    assert not trained_app.exception, [e.value for e in trained_app.exception]
+    assert "⬇️ Download Model File" in _downloads(trained_app)
+    model_file = trained_app.session_state.model_file
+
+    fresh = start_app()
+    _uploader(fresh, "Model file").upload("churn.churnmodel", model_file, "application/octet-stream")
+    fresh.run()
+    assert not fresh.exception, [e.value for e in fresh.exception]
+    assert any("Loaded **Logistic Regression**" in s.value for s in fresh.success)
+
+    new = make_customers(50, seed=5).drop(columns=["Churn"])
+    _uploader(fresh, "Upload new customers").upload("new.csv", new.to_csv(index=False).encode(), "text/csv")
+    fresh.run()
+    next(b for b in fresh.button if "Predict Churn" in b.label).click()
+    fresh.run()
+    assert not fresh.exception, [e.value for e in fresh.exception]
+    assert {m.label: m.value for m in fresh.metric}["Total Customers"] == "50"
+    table = next(d.value for d in fresh.dataframe if "Churn Probability" in d.value.columns)
+    assert len(table) == 50
+
+
+def test_a_forged_model_file_is_refused_in_the_page():
+    at = start_app()
+    _uploader(at, "Model file").upload("evil.churnmodel", b"not a model at all", "application/octet-stream")
+    at.run()
+    assert not at.exception
+    assert any("not a model file" in e.value for e in at.error)
+
+
+def test_without_a_key_on_a_hosted_app_saving_is_off(monkeypatch):
+    from src import model_store
+    monkeypatch.delenv("CHURN_MODEL_KEY", raising=False)
+    monkeypatch.setattr(model_store, "ON_CLOUD", True)
+    at = start_app()
+    assert any("Saving models is turned off" in i.value for i in at.info)
+    assert len(at.file_uploader) == 1
+
+
 def test_home_page_renders():
     at = start_app()
     assert "Churn Analytics Studio" in at.title[0].value
