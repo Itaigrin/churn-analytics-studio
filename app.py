@@ -648,8 +648,13 @@ def _outcomes_section(model, prefix: str = ""):
     if not two_valued:
         st.error("No column with two values was found. Add a column saying who left, such as Yes/No.")
         return
+    from src.profiler import detect_target_column
+    # The column the model was trained on, or failing that the one that looks like churn
+    trained_on = getattr(model, "target_col", "")
+    likely = trained_on if trained_on in two_valued else detect_target_column(df)
     c1, c2, c3 = st.columns([2, 2, 2])
-    outcome_col = c1.selectbox("Column with what really happened", two_valued, key=f"{prefix}outcome_col")
+    outcome_col = c1.selectbox("Column with what really happened", two_valued, key=f"{prefix}outcome_col",
+                               index=two_valued.index(likely) if likely in two_valued else 0)
     labels = [str(v) for v in target_labels(df[outcome_col])]
     suggested, _ = suggest_positive_label(df[outcome_col], outcome_col)
     left_label = c2.selectbox("Value that means the customer left", labels,

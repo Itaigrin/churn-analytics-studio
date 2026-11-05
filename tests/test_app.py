@@ -188,8 +188,8 @@ def test_past_predictions_are_checked_against_what_happened(trained_app):
     _uploader(trained_app, "Customers with their real outcome").upload(
         "outcomes.csv", later.to_csv(index=False).encode(), "text/csv")
     trained_app.run()
-    next(b for b in trained_app.selectbox if b.label == "Column with what really happened").select("Churn")
-    trained_app.run()
+    # Auto Pay also has two values and comes first; the column trained on must win
+    assert next(b for b in trained_app.selectbox if b.label == "Column with what really happened").value == "Churn"
     next(b for b in trained_app.button if b.label == "📊 Check The Model").click()
     trained_app.run()
     assert not trained_app.exception, [e.value for e in trained_app.exception]
