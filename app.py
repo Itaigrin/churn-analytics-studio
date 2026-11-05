@@ -305,6 +305,8 @@ def _show_results():
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
     _show_professional_analysis(best_name, holdout)
 
+    _show_lift(holdout, run.n_holdout)
+
     _save_model_section(run)
 
 
@@ -516,6 +518,49 @@ def _show_guide():
     )
 
 
+def _show_lift(holdout: dict, n_holdout: int):
+    """How much of the churn a campaign reaches when it can only contact the riskiest few."""
+    _sec("🎯", "Who To Contact First")
+    lift = holdout["lift_table"]
+    top = lift.iloc[0]
+    top_two = lift.iloc[1]
+    st.markdown(
+        f"On {n_holdout:,} customers the model had not seen, the riskiest **{top['Riskiest']}** included "
+        f"**{top['Churners Caught So Far']:.0%}** of everyone who left, a churn rate "
+        f"**{top['Lift']:.1f}×** the average. The riskiest **{top_two['Riskiest']}** included "
+        f"**{top_two['Churners Caught So Far']:.0%}**. With a limited budget, start at the top of the list."
+    )
+    table = lift.assign(**{
+        "Churn Rate": lift["Churn Rate"].map("{:.1%}".format),
+        "Lift": lift["Lift"].map("{:.1f}×".format),
+        "Churners Caught So Far": lift["Churners Caught So Far"].map("{:.0%}".format),
+    })
+    st.dataframe(table, width="stretch", hide_index=True)
+
+
+def _economics_inputs(prefix: str):
+    """The three business numbers that turn probabilities into money."""
+    from src.business import Economics
+
+    with st.expander("💰 Campaign economics — set these to see the money", expanded=False):
+        st.caption("Use your own currency. Rough numbers are fine; the result shows how much they matter.")
+        e1, e2, e3 = st.columns(3)
+        value = e1.number_input(
+            "Value of a customer who stays", min_value=1.0, value=1000.0, step=100.0,
+            key=f"{prefix}econ_value",
+            help="What you lose when a customer leaves, for example a year of profit from them.")
+        cost = e2.number_input(
+            "Cost of one retention contact", min_value=0.0, value=50.0, step=10.0,
+            key=f"{prefix}econ_cost",
+            help="A call, a discount or an offer, including staff time.")
+        success = e3.slider(
+            "Churners a contact keeps", min_value=0.05, max_value=1.0, value=0.25, step=0.05,
+            key=f"{prefix}econ_success",
+            help="Of the customers who would have left and were contacted, the share who stay. "
+                 "Measure it with a test campaign if you can.")
+    return Economics(value, cost, success)
+
+
 _SAVING_OFF = (
     "Saving models is turned off here. It needs a private signing key: set `CHURN_MODEL_KEY` "
     "in the app's secrets. Private installations create their own key automatically."
@@ -664,8 +709,21 @@ def _predict_section(model, prefix: str = ""):
         st.warning(_note)
 
     # ── Threshold selector ────────────────────────────────────────────────────
-    auto_thr  = round(float(artifact.threshold), 2)
+    from src.business import campaign_estimate, contact_everyone, file_estimate
+
     thr_curve = model.holdout["threshold_curve"]
+    economics = _economics_inputs(prefix)
+    goal = st.radio(
+        "Choose who gets flagged by",
+        ["Best balance (F1)", "Most profit (your numbers above)"],
+        horizontal=True, key=f"{prefix}threshold_goal",
+    )
+    by_profit = goal.startswith("Most profit")
+    breakeven = economics.breakeven
+    if by_profit:
+        auto_thr = float(np.clip(round(breakeven, 2), 0.02, 0.90))
+    else:
+        auto_thr = round(float(artifact.threshold), 2)
 
     st.markdown("#### Sensitivity Setting")
     sl_col, hint_col = st.columns([3, 2])
@@ -674,7 +732,7 @@ def _predict_section(model, prefix: str = ""):
             "Decision Threshold",
             min_value=0.02, max_value=0.90,
             value=auto_thr, step=0.01,
-            key=f"{prefix}threshold_slider",
+            key=f"{prefix}threshold_slider_{goal}",
             help=(
                 "A customer is flagged when their churn probability reaches this value.\n\n"
                 "Lower → more customers flagged (higher Recall, more false alarms).\n\n"
@@ -689,19 +747,42 @@ def _predict_section(model, prefix: str = ""):
         )
 
         with st.expander(f"Why {auto_thr:.2f}?"):
-            st.markdown(
-                f"**{auto_thr:.2f}** gave the highest **F1 score**, the balance between catching "
-                f"churners (Recall) and avoiding false alarms (Precision). Every threshold from 0.02 "
-                f"to 0.90 was tested on calibrated predictions for customers each fold had not seen."
-            )
+            if by_profit:
+                clipped = "" if 0.02 <= breakeven <= 0.90 else (
+                    f" The exact value, {breakeven:.3f}, is outside the 0.02–0.90 range, so the nearest end is used.")
+                st.markdown(
+                    f"A contact pays for itself when the customer's churn probability is above "
+                    f"cost ÷ (share kept × value) = {economics.cost:,.0f} ÷ ({economics.success:.0%} × "
+                    f"{economics.value:,.0f}) = **{breakeven:.3f}**. Below that, the expected saving is smaller "
+                    f"than the cost of the contact. This works because the probabilities are calibrated."
+                    + clipped
+                )
+            else:
+                st.markdown(
+                    f"**{auto_thr:.2f}** gave the highest **F1 score**, the balance between catching "
+                    f"churners (Recall) and avoiding false alarms (Precision). Every threshold from 0.02 "
+                    f"to 0.90 was tested on calibrated predictions for customers each fold had not seen."
+                )
 
     with hint_col:
         if abs(selected_thr - auto_thr) <= 0.02:
-            st.info("⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
+            st.info("💰 **Recommended setting** — the most profitable cut for your numbers." if by_profit else
+                    "⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
         elif selected_thr < auto_thr:
             st.info("🔍 **More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
         else:
             st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
+
+    estimate = campaign_estimate(thr_curve, model.holdout["actual_rate"], economics)
+    at_threshold = estimate.iloc[(estimate["threshold"] - selected_thr).abs().argsort()[:1]].iloc[0]
+    everyone = contact_everyone(model.holdout["actual_rate"], economics)
+    st.markdown(
+        f"**At this threshold, per 1,000 customers like the unseen ones:** contact "
+        f"**{at_threshold['contacted']:,.0f}**, reach **{at_threshold['churners_reached']:,.0f}** of the "
+        f"{model.holdout['actual_rate'] * 1000:,.0f} who would leave, keep about "
+        f"**{at_threshold['customers_saved']:,.0f}**. Net result **{at_threshold['net']:,.0f}**, against "
+        f"{everyone:,.0f} for contacting everyone and 0 for doing nothing."
+    )
 
     # ── Predict button ────────────────────────────────────────────────────────
     if st.button("🔮 Predict Churn", type="primary", key=f"{prefix}predict_btn", disabled=not allow_missing):
@@ -734,6 +815,16 @@ def _predict_section(model, prefix: str = ""):
     m2.metric("Flagged At Risk",  f"{n_flagged:,}")
     m3.metric("Not Flagged",      f"{total - n_flagged:,}")
     m4.metric("% Flagged",        f"{n_flagged / max(total, 1):.1%}")
+
+    campaign = file_estimate(raw_probs, selected_thr, economics)
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Expected Churners Among Flagged", f"{campaign['expected_churners_reached']:,.0f}",
+              help="The sum of the flagged customers' churn probabilities.")
+    b2.metric("Expected Customers Kept", f"{campaign['expected_saved']:,.0f}",
+              help="Expected churners among the flagged, times the share a contact keeps.")
+    b3.metric("Expected Net Result", f"{campaign['net']:,.0f}",
+              help="Value of the customers kept minus the cost of contacting every flagged customer. "
+                   "Uses your numbers in Campaign economics.")
 
     # ── Risk compared with history ────────────────────────────────────────────
     expected = float(raw_probs.mean())
@@ -770,6 +861,7 @@ def _predict_section(model, prefix: str = ""):
     display_df = df_new.copy()
     display_df["Flagged At Risk"]   = np.where(flagged_mask, "Yes", "No")
     display_df["Churn Probability"] = np.round(raw_probs, 4)
+    display_df["Expected Gain From Contact"] = np.round(economics.gain(raw_probs), 2)
     for i in range(TOP_REASONS):
         display_df[f"Reason {i + 1}"] = [
             format_reason(reasons[i]) if flagged and i < len(reasons) else ""

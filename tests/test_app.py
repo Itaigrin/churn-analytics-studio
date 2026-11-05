@@ -116,6 +116,32 @@ def test_without_a_key_on_a_hosted_app_saving_is_off(monkeypatch):
     assert len(at.file_uploader) == 1
 
 
+def test_results_show_who_to_contact_first(trained_app):
+    assert "Who To Contact First" in text_of(trained_app)
+    lift = next(d.value for d in trained_app.dataframe if "Lift" in d.value.columns)
+    assert len(lift) == 10
+
+
+def test_the_profit_goal_sets_the_breakeven_threshold_and_shows_the_money(trained_app):
+    new = make_customers(60, seed=4).drop(columns=["Churn"])
+    upload_file(trained_app, 1, new.to_csv(index=False).encode(), "money.csv")
+    goal = next(r for r in trained_app.radio if r.label == "Choose who gets flagged by")
+    goal.set_value("Most profit (your numbers above)")
+    trained_app.run()
+    # Defaults: cost 50 / (25% kept x value 1,000) = 0.20
+    assert any(s.label == "Decision Threshold" and s.value == pytest.approx(0.20) for s in trained_app.slider)
+    assert "per 1,000 customers like the unseen ones" in text_of(trained_app)
+    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    trained_app.run()
+    assert not trained_app.exception, [e.value for e in trained_app.exception]
+    labels = {m.label for m in trained_app.metric}
+    assert {"Expected Customers Kept", "Expected Net Result"} <= labels
+    table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
+    expected_gain = table["Churn Probability"] * 0.25 * 1000 - 50
+    # The probability shown is rounded to 4 decimals, so allow for that
+    assert (table["Expected Gain From Contact"] - expected_gain).abs().max() < 0.02
+
+
 def test_home_page_renders():
     at = start_app()
     assert "Churn Analytics Studio" in at.title[0].value
