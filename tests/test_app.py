@@ -183,6 +183,20 @@ def test_scoring_shows_whether_the_data_has_changed(trained_app):
     assert any("train the model again" in w.value for w in trained_app.warning)
 
 
+def test_past_predictions_are_checked_against_what_happened(trained_app):
+    later = make_customers(600, seed=31)
+    _uploader(trained_app, "Customers with their real outcome").upload(
+        "outcomes.csv", later.to_csv(index=False).encode(), "text/csv")
+    trained_app.run()
+    next(b for b in trained_app.selectbox if b.label == "Column with what really happened").select("Churn")
+    trained_app.run()
+    next(b for b in trained_app.button if b.label == "📊 Check The Model").click()
+    trained_app.run()
+    assert not trained_app.exception, [e.value for e in trained_app.exception]
+    assert "Predicted vs Actual Churn" in {m.label for m in trained_app.metric}
+    assert any("holding up" in s.value for s in trained_app.success)
+
+
 def test_home_page_renders():
     at = start_app()
     assert "Churn Analytics Studio" in at.title[0].value
