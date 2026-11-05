@@ -9,9 +9,18 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import hashlib  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import src  # noqa: E402
 from src.runtime_env import limit_threads  # noqa: E402
 
 limit_threads()
+
+# app.py reloads src when its files differ from what was imported. The tests import src
+# themselves, so mark it current, or the app would swap the classes under the tests.
+src._source_stamp = hashlib.sha256(
+    b"".join(p.read_bytes() for p in sorted(Path(ROOT, "src").glob("*.py")))).digest()
 
 # Small enough for a test run, while still exercising the real search and refit
 FAST_BUDGET = {"optuna_trials": 3, "hpo_cv_folds": 3, "hpo_max_rows": 0, "max_iters": 40, "rf_trees": 30}

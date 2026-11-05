@@ -167,6 +167,22 @@ def test_dates_can_be_used_and_the_model_tested_on_recent_customers():
     assert {m.label: m.value for m in at.metric}["Total Customers"] == "30"
 
 
+def test_scoring_shows_whether_the_data_has_changed(trained_app):
+    new = make_customers(300, seed=12).drop(columns=["Churn"])
+    upload_file(trained_app, 1, new.to_csv(index=False).encode(), "same.csv")
+    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    trained_app.run()
+    assert "Has The Data Changed Since Training?" in text_of(trained_app)
+    assert not any("train the model again" in w.value for w in trained_app.warning)
+
+    shifted = new.assign(Tenure=70)
+    shifted["Support Calls"] = shifted["Support Calls"] + 6
+    upload_file(trained_app, 1, shifted.to_csv(index=False).encode(), "shifted.csv")
+    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    trained_app.run()
+    assert any("train the model again" in w.value for w in trained_app.warning)
+
+
 def test_home_page_renders():
     at = start_app()
     assert "Churn Analytics Studio" in at.title[0].value

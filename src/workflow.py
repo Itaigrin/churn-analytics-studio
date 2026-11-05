@@ -36,6 +36,7 @@ from .evaluator import evaluate_all, evaluate_holdout, pick_best_model
 from .explain import MAX_CUSTOMERS, ColumnReference, Reason, build_reference, column_effects, top_reasons
 from .feature_engineering import FeatureSpec, apply_features, fit_feature_spec
 from .leakage import LeakFinding, scan_for_leakage
+from .monitoring import DriftReference, DriftReport, build_drift_reference, drift_report
 from .pipeline_builder import (
     convert_target, days_before, detect_date_order, normalize_column_name, parse_dates, raw_clean,
 )
@@ -55,6 +56,7 @@ class ChurnArtifact:
     threshold: float
     model_columns: list[str]
     reference: dict[str, ColumnReference] = field(default_factory=dict)
+    drift_reference: DriftReference = field(default_factory=DriftReference)
 
     def check(self, df_new: pd.DataFrame, as_of=None) -> ConformReport:
         """What does not fit in this file, without scoring it."""
@@ -74,6 +76,11 @@ class ChurnArtifact:
             )
         features = apply_features(X, self.feature_spec)[self.model_columns]
         return self.model.predict_proba(features)[:, 1]
+
+    def monitor(self, df_new: pd.DataFrame, probabilities: np.ndarray, as_of=None) -> DriftReport:
+        """How far this file's columns and scores are from the training customers."""
+        X, _ = conform(df_new, self.schema, as_of)
+        return drift_report(self.drift_reference, X, probabilities)
 
     def explain(self, df_new: pd.DataFrame, probabilities: np.ndarray, as_of=None) -> list[list[Reason]]:
         """The main reasons behind each customer's risk. Only the riskiest are explained."""
@@ -277,6 +284,8 @@ def run_training(
         threshold=best["threshold"],
         model_columns=list(X_all.columns),
         reference=build_reference(X_train, schema.of_kind("numeric")),
+        drift_reference=build_drift_reference(
+            X_train, schema.of_kind("numeric"), trained.predict_proba(X_test_f)[:, 1]),
     )
 
     report(100, "Done")
