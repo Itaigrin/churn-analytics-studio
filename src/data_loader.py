@@ -1,67 +1,87 @@
 """
-File loading with automatic delimiter detection and encoding fallback.
+File loading with automatic delimiter detection and encoding detection.
+
+Everything is decoded up front from the whole file, so a problem in the last
+row cannot be missed by looking only at a sample of the first few kilobytes.
 """
 
 import io
+
 import pandas as pd
+
+from .errors import DataFileError
+
+_HEBREW_NEIGHBOUR_SHARE = 0.5
 
 
 def load_uploaded_file(uploaded_file) -> pd.DataFrame:
     """
     Load a CSV or Excel file from a Streamlit UploadedFile object.
-    Automatically detects CSV delimiter and tries multiple encodings.
+    Raises DataFileError with a readable message when the file cannot be parsed.
     """
     name = uploaded_file.name.lower()
+    uploaded_file.seek(0)
 
     if name.endswith((".xlsx", ".xls")):
-        uploaded_file.seek(0)
-        xl = pd.ExcelFile(uploaded_file)
-        if len(xl.sheet_names) == 1:
-            return xl.parse(xl.sheet_names[0])
-        # Multiple sheets — pick the one with the most rows
-        best_sheet, best_rows = xl.sheet_names[0], -1
-        for sheet in xl.sheet_names:
-            try:
-                n = xl.parse(sheet).shape[0]
-                if n > best_rows:
-                    best_rows, best_sheet = n, sheet
-            except Exception:
-                continue
-        return xl.parse(best_sheet)
+        return _load_excel(uploaded_file)
 
-    # Read a sample to detect delimiter
-    uploaded_file.seek(0)
-    raw_bytes = uploaded_file.read(8192)
-    uploaded_file.seek(0)
+    raw = uploaded_file.read()
+    if not raw.strip():
+        raise DataFileError("The file is empty.")
 
-    # Try encodings in order
-    sample_text = None
-    detected_enc = "utf-8"
-    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
-        try:
-            sample_text = raw_bytes.decode(enc)
-            detected_enc = enc
-            break
-        except UnicodeDecodeError:
-            continue
-    if sample_text is None:
-        sample_text = raw_bytes.decode("utf-8", errors="replace")
-
-    delimiter = _detect_delimiter(sample_text)
-
-    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
-        try:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, encoding=enc, sep=delimiter)
-            df.columns = _clean_column_names(df.columns)
-            return df
-        except (UnicodeDecodeError, Exception):
-            continue
-
-    uploaded_file.seek(0)
-    df = pd.read_csv(uploaded_file, encoding="utf-8", errors="replace", sep=delimiter)
+    text = _decode(raw)
+    delimiter = _detect_delimiter(text[:8192])
+    try:
+        df = pd.read_csv(io.StringIO(text), sep=delimiter)
+    except pd.errors.EmptyDataError as exc:
+        raise DataFileError("The file has no columns to read.") from exc
+    except pd.errors.ParserError as exc:
+        raise DataFileError(
+            f"The file is not a well-formed table, so it was not loaded: {exc}. "
+            "Check that row in the file, or export it again from the source system."
+        ) from exc
     df.columns = _clean_column_names(df.columns)
     return df
+
+
+def _load_excel(uploaded_file) -> pd.DataFrame:
+    try:
+        xl = pd.ExcelFile(uploaded_file)
+        sheets = {sheet: xl.parse(sheet) for sheet in xl.sheet_names}
+    except (ValueError, OSError, ImportError) as exc:
+        raise DataFileError(f"The Excel file could not be read: {exc}") from exc
+    # Several sheets: the one with the most rows is taken to be the data
+    df = max(sheets.values(), key=len)
+    df.columns = _clean_column_names(df.columns)
+    return df
+
+
+def _decode(raw: bytes) -> str:
+    """UTF-8 and UTF-16 are recognised exactly; legacy single-byte files by their bytes."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    encoding = "cp1255" if _looks_like_hebrew(raw) else "cp1252"
+    return raw.decode(encoding, errors="replace")
+
+
+def _looks_like_hebrew(raw: bytes) -> bool:
+    """
+    Tell Windows-1255 Hebrew from Windows-1252 Western text.
+
+    Both use bytes above 0x7F, so the difference is in how they sit together.
+    A Hebrew word is a run of such bytes, while an accented Western letter
+    (é, ü) stands alone between ASCII letters.
+    """
+    high = [i for i, b in enumerate(raw) if b >= 0x80]
+    if not high:
+        return False
+    high_set = set(high)
+    with_neighbour = sum(1 for i in high if i - 1 in high_set or i + 1 in high_set)
+    return with_neighbour / len(high) >= _HEBREW_NEIGHBOUR_SHARE
 
 
 def _detect_delimiter(sample: str) -> str:
@@ -72,4 +92,4 @@ def _detect_delimiter(sample: str) -> str:
 
 
 def _clean_column_names(columns) -> list:
-    return [str(c).strip().lstrip("﻿").lstrip("ï»¿") for c in columns]
+    return [str(c).strip().lstrip("﻿") for c in columns]

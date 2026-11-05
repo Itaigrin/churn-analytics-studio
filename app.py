@@ -4,15 +4,12 @@ ChurnApp Pro - Professional Customer Churn Prediction
 Streamlit application implementing a full ML pipeline:
 
   Step 1   Upload & Validate Dataset
-  Step 2   Automatic Data Profiling
-  Step 3   Data Cleaning (inside sklearn Pipelines - zero data leakage)
-  Step 4   Lightweight Feature Engineering
-  Step 6   Train / Test Split (stratified 80/20, random_state=42)
-  Step 7   Preprocessing (ColumnTransformer, conditiohnal scaling per model)
-  Step 8   Model Training (Fast / Balanced / Best Accuracy modes)
-  Step 9   Hyperparameter Optimisation (RandomizedSearchCV / Optuna)
-  Step 10  Evaluation (6 metrics, correct best-model selection for imbalanced data)
-  Step 11  Professional Model Analysis (B2C business framing)
+  Step 2   Column Detection, Leak Screening
+  Step 3   Model Training, with hyperparameter search
+  Step 4   Results, measured on customers held back from all of the above
+           Predict New Customers
+
+The training flow itself lives in src/workflow.py, which has no UI code.
 """
 
 import sys
@@ -60,6 +57,9 @@ st.markdown("""
 # HELPER FUNCTIONS  (defined before any Streamlit widget calls)
 # ══════════════════════════════════════════════════════════════════════════════
 
+_MIN_CUSTOMERS_TO_COMPARE = 30
+
+
 def _sec(icon: str, title: str):
     st.markdown(
         f'<div class="section-header">{icon} {title}</div>',
@@ -67,15 +67,28 @@ def _sec(icon: str, title: str):
     )
 
 
-def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
+def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col, positive_label,
+                            exclude_cols: list):
     """Displays the Predictive Signal Assessment results."""
+    from src.pipeline_builder import raw_clean, normalize_column_name
+    from src.profiler import profile_dataset
     from src.signal_assessor import assess_predictive_signal
 
     _data_hash = hash(df.to_csv(index=False)[:5000])
-    cache_key  = f"signal_{len(df)}_{target_col}_{id_col}_{_data_hash}"
+    cache_key  = f"signal_{len(df)}_{target_col}_{id_col}_{positive_label}_{exclude_cols}_{_data_hash}"
     if st.session_state.get("_signal_cache_key") != cache_key:
         with st.spinner("Analysing predictive signal…"):
-            result = assess_predictive_signal(df, target_col, id_col)
+            _profile = profile_dataset(
+                raw_clean(df.drop(columns=[target_col])), target_col=None,
+                id_col=normalize_column_name(id_col) if id_col else None,
+            )
+            _used = (_profile["numeric_cols"] + _profile["boolean_cols"]
+                     + _profile["categorical_cols"])
+            _left_out = {normalize_column_name(c) for c in exclude_cols}
+            result = assess_predictive_signal(
+                df, target_col, id_col, positive_label=positive_label,
+                only_columns=[c for c in _used if c not in _left_out],
+            )
         st.session_state["_signal_result"]    = result
         st.session_state["_signal_cache_key"] = cache_key
     else:
@@ -96,7 +109,7 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col):
             "Signal":                   f"{row['signal']:.3f}",
             "Why This Feature Matters": row["explanation"],
         })
-    st.dataframe(pd.DataFrame(top_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(top_rows), width="stretch", hide_index=True)
 
     st.divider()
 
@@ -157,24 +170,12 @@ def _estimate_runtime(df: pd.DataFrame, selected_models: list,
 
 
 def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: list,
-                  budget: dict | None = None):
-    """Executes Steps 3–10 and stores results in st.session_state."""
-    from sklearn.model_selection import train_test_split
-    from src.config import (
-        RANDOM_STATE, TEST_SIZE, IMBALANCE_LOW, IMBALANCE_HIGH, VERY_LARGE_DATASET_ROWS,
-    )
-    from src.pipeline_builder import raw_clean, convert_target
-    from src.profiler import profile_dataset
-    from src.feature_engineering import engineer_features
-    from src.trainer import train_all_models
-    from src.evaluator import evaluate_all, pick_best_model
-    from src.utils import ensure_optional_libraries
+                  budget: dict | None, positive_label, exclude_cols: list):
+    """Runs the training flow and stores the outcome in st.session_state."""
+    from src.errors import ChurnAppError
+    from src.workflow import run_training
 
     prog_container = st.empty()
-    t_start        = time.time()
-
-    _current_pct = [0]
-    _current_msg = ["Starting…"]
 
     def _render(pct, msg):
         prog_container.markdown(
@@ -187,283 +188,97 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
   <div style="background:#2d3748;border-radius:6px;height:10px;overflow:hidden">
     <div style="background:linear-gradient(90deg,#4299e1,#63b3ed);width:{pct}%;height:100%;border-radius:6px;transition:width 0.3s ease"></div>
   </div>
-  <div style="margin-top:10px;color:#e2e8f0;font-size:13px">⏳ {msg}</div>
+  <div style="margin-top:10px;color:#e2e8f0;font-size:13px">⏳ {msg.replace("**", "")}</div>
 </div>
 """,
             unsafe_allow_html=True,
         )
 
-    def upd(pct: int, msg: str):
-        _current_pct[0] = pct
-        _current_msg[0] = msg
-        _render(pct, msg)
-
     try:
-        upd(2, "Checking optional libraries (XGBoost, LightGBM, CatBoost, SHAP, Optuna)…")
-        lib_status = ensure_optional_libraries()
-        st.session_state.lib_status = lib_status
-
-        # Step 3: Raw cleaning
-        upd(5, "Step 3 - Raw cleaning (text normalisation, boolean→0/1, numeric strings)…")
-        df_clean = raw_clean(df)
-
-        def _std(c):
-            return c.strip().lower().replace(" ", "_").replace("-", "_") if c else None
-
-        id_col_std     = _std(id_col)
-        target_col_std = _std(target_col)
-
-        if target_col_std not in df_clean.columns:
-            st.error(f"Target column '{target_col}' not found. Available: {list(df_clean.columns)[:10]}")
-            prog_container.empty(); return
-
-        try:
-            y = convert_target(df_clean[target_col_std])
-        except Exception as e:
-            st.error(f"Target column error: {e}"); prog_container.empty(); return  # noqa
-
-        ids = (df_clean[id_col_std].copy()
-               if id_col_std and id_col_std in df_clean.columns
-               else pd.Series(range(len(df_clean)), name="row_id"))
-
-        drop_initial = [c for c in [id_col_std, target_col_std] if c and c in df_clean.columns]
-        X_raw = df_clean.drop(columns=drop_initial, errors="ignore")
-
-        # Step 2: Data Profiling
-        upd(10, "Step 2 - Automatic data profiling (types, quality, leakage check)…")
-        profile = profile_dataset(df_clean, target_col=target_col_std, id_col=id_col_std)
-        X_raw   = X_raw.drop(columns=list(profile["drop_cols"].keys()), errors="ignore")
-
-        for w in profile["leakage_warnings"]:
-            st.warning(w)
-        for w in profile["general_warnings"][:3]:
-            st.info(w)
-
-        n             = len(X_raw)
-        churn_rate    = float(y.mean())
-        is_imbalanced = churn_rate < IMBALANCE_LOW or churn_rate > IMBALANCE_HIGH
-
-        if n > VERY_LARGE_DATASET_ROWS:
-            st.warning(f"⚠️ Very large dataset ({n:,} rows). Consider stratified sampling.")
-        if is_imbalanced:
-            st.warning(
-                f"⚠️ Only **{churn_rate:.1%}** of customers in this dataset churned. "
-                "When churners are rare, models tend to ignore them and predict 'will stay' for everyone. "
-                "The app automatically adjusts for this so the model pays extra attention to churners and doesn't miss them."
-            )
-
-        upd(15, f"✅ {n:,} rows · {X_raw.shape[1]} features · churn rate {churn_rate:.1%}")
-
-        # Step 4: Feature Engineering
-        upd(20, "Step 4 - Feature engineering (ratios, products, MI-selected features)…")
-        X_raw, new_feat_names = engineer_features(
-            X_raw, profile["numeric_cols"],
-            cat_cols=profile["categorical_cols"],
-            bool_cols=profile["boolean_cols"],
-        )
-        profile["numeric_cols"] = profile["numeric_cols"] + new_feat_names
-
-        # Step 6: Train/Test Split
-        upd(28, "Step 6 - Stratified 80/20 split (random_state=42)…")
-        try:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_raw, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
-        except ValueError:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_raw, y, test_size=TEST_SIZE, random_state=RANDOM_STATE)
-
-        st.success(
-            f"✅ Train: **{len(X_train):,}** · Test: **{len(X_test):,}** "
-            "(split BEFORE imputation/encoding → zero data leakage)"
-        )
-
-        # Step 4b: MI-based feature selection (uses only X_train/y_train — no leakage)
-        if new_feat_names:
-            upd(30, "Step 4b - Selecting engineered features by mutual information (train set only)…")
-            from src.feature_engineering import select_engineered_features
-            selected_feat_names = select_engineered_features(X_train, y_train, new_feat_names)
-            discarded = [c for c in new_feat_names if c not in set(selected_feat_names)]
-            if discarded:
-                X_train = X_train.drop(columns=discarded, errors="ignore")
-                X_test  = X_test.drop(columns=discarded, errors="ignore")
-                X_raw   = X_raw.drop(columns=discarded, errors="ignore")
-                profile["numeric_cols"] = [c for c in profile["numeric_cols"]
-                                           if c not in set(discarded)]
-            new_feat_names = selected_feat_names
-            if selected_feat_names:
-                st.info(f"✅ Added engineered features: {', '.join(selected_feat_names)}")
-
-
-        # Steps 8 & 9: Train + HPO
-        model_list_str = ", ".join(selected_models)
-        upd(33, f"Steps 8–9 - Training {len(selected_models)} models: {model_list_str}…")
-
-        def _cb(name, i, total, detail):
-            pct = 33 + int(i / max(total, 1) * 57)
-            upd(pct, f"Training **{name}** ({i + 1}/{total}) · {detail}")
-
-        results = train_all_models(
-            X_train=X_train, y_train=y_train,
-            X_test=X_test,   y_test=y_test,
-            profile=profile,
+        run = run_training(
+            df, target_col, id_col=id_col,
             selected_models=selected_models,
-            n_samples=len(X_train),
-            is_imbalanced=is_imbalanced,
-            progress_callback=_cb,
             budget=budget,
+            positive_label=positive_label,
+            exclude_cols=exclude_cols,
+            progress=_render,
         )
-
-        # Step 10: Evaluate + pick best model
-        upd(88, "Step 10 - Evaluating on test set…")
-        results   = evaluate_all(results, X_train, y_train, X_test, y_test)
-        best_name = pick_best_model(results, actual_positives=int(y_test.sum()))
-
-        # Guard: if all models failed, surface the errors clearly
-        if results[best_name].get("model") is None:
-            failed_msgs = []
-            for name, r in results.items():
-                if r.get("error"):
-                    failed_msgs.append(f"**{name}**: {r['error'][:200]}")
-            err_detail = "\n\n".join(failed_msgs) if failed_msgs else "No details available."
-            st.error(
-                "All models failed to train. Check that your dataset has valid numeric "
-                "and categorical columns and that the target column is binary (0/1 or Yes/No).\n\n"
-                + err_detail
-            )
-            prog_container.empty()
-            return
-
-        # Step 11: 5-fold CV on full dataset — reliable metrics + averaged threshold
-        upd(90, "Step 11 - Cross-validation (5 folds) on full dataset for reliable metrics…")
-        from src.evaluator import evaluate_model_cv
-        X_full = pd.concat([X_train, X_test], axis=0).reset_index(drop=True)
-        y_full = pd.concat([
-            pd.Series(y_train.values, name=y_train.name),
-            pd.Series(y_test.values,  name=y_test.name),
-        ], axis=0).reset_index(drop=True)
-        cv_metrics = evaluate_model_cv(results[best_name]["model"], X_full, y_full, cv_folds=5)
-        results[best_name].update(cv_metrics)
-
-        # Use the CV-averaged threshold — consistent with the CV metrics shown to the user
-        cv_threshold = cv_metrics["cv_avg_threshold"]
-        results[best_name]["best_threshold"] = cv_threshold
-
-        # Check if calibration is beneficial (using original train/test split)
-        upd(94, "Checking probability calibration benefit…")
-        from src.evaluator import calibrate_model
-        from sklearn.base import clone as _clone
-        original_model = results[best_name]["model"]
-        _, cal_helps, _, _ = calibrate_model(
-            original_model, X_train, y_train, X_test, y_test
-        )
-
-        # Refit best model on ALL data — uses every available example for production
-        upd(96, "Refitting best model on full dataset for maximum real-world performance…")
-        if cal_helps:
-            # 80% train + 20% calibration on full data
-            from sklearn.model_selection import train_test_split as _tts_cal
-            from sklearn.calibration import CalibratedClassifierCV
-            try:
-                X_cf, X_cv, y_cf, y_cv = _tts_cal(
-                    X_full, y_full, test_size=0.20, random_state=42, stratify=y_full
-                )
-                cal_base = _clone(original_model)
-                cal_base.fit(X_cf, y_cf)
-                final_model = CalibratedClassifierCV(cal_base, cv="prefit", method="sigmoid")
-                final_model.fit(X_cv, y_cv)
-                results[best_name]["model"] = final_model
-            except Exception:
-                full_model = _clone(original_model)
-                full_model.fit(X_full, y_full)
-                results[best_name]["model"] = full_model
-        else:
-            full_model = _clone(original_model)
-            full_model.fit(X_full, y_full)
-            results[best_name]["model"] = full_model
-
-        total_runtime = time.time() - t_start
-
-        st.session_state.update(dict(
-            profile           = profile,
-            X_raw             = X_raw,
-            y                 = y,
-            ids               = ids,
-            X_train           = X_train,
-            X_test            = X_test,
-            y_train           = y_train,
-            y_test            = y_test,
-            new_feature_names = new_feat_names,
-            train_cols        = list(X_train.columns),
-            results           = results,
-            best_model_name   = best_name,
-            selected_info     = [],
-            total_runtime     = total_runtime,
-            churn_rate        = churn_rate,
-            is_imbalanced     = is_imbalanced,
-            training_done     = True,
-            # Clear prediction cache so X_new is rebuilt against the new model
-            _pred_file_key    = None,
-            _pred_X_new       = None,
-            _pred_ids_new     = None,
-            _pred_df_orig     = None,
-            pred_raw_probs    = None,
-        ))
-
-        upd(100, f"✅ Done in {total_runtime:.0f}s")
-        time.sleep(0.8)
+    except ChurnAppError as exc:
         prog_container.empty()
-        st.rerun()
-
+        st.error(str(exc))
+        return
     except Exception as exc:
         prog_container.empty()
         st.error(f"Pipeline error: {exc}")
         with st.expander("Full traceback"):
             st.code(traceback.format_exc())
+        return
+
+    st.session_state.update(dict(
+        run               = run,
+        training_done     = True,
+        # Clear prediction cache so the next file is checked against the new model
+        _pred_file_key    = None,
+        _pred_df_new      = None,
+        _pred_report      = None,
+        pred_raw_probs    = None,
+    ))
+    time.sleep(0.5)
+    prog_container.empty()
+    st.rerun()
 
 
 def _show_results():
-    """Renders Steps 10–11 from session_state."""
+    """Renders the results of the last training run from session_state."""
     from src.evaluator import build_comparison_table
-    from src.explainer import get_builtin_importance
 
-    results       = st.session_state.results
-    best_name     = st.session_state.best_model_name
-    best          = results[best_name]
-    total_runtime = st.session_state.get("total_runtime", 0)
-    is_imbalanced = st.session_state.get("is_imbalanced", False)
+    run       = st.session_state.run
+    results   = run.results
+    best_name = run.best_model_name
+    holdout   = run.holdout
 
     st.divider()
 
-    # ── Step 10: Primary Metrics ──────────────────────────────────────────────
+    for _msg in run.warnings:
+        st.warning(_msg)
+    for _msg in run.notes:
+        st.info(_msg)
+
     _sec("📈", "Step 4 - Evaluation Results")
 
-    # CV metrics are the reliable estimate — model was refitted on all data using CV threshold
-    roc    = best.get("cv_roc_auc",            best.get("roc_auc",            0))
-    recall = best.get("cv_recall",             best.get("recall",             0))
-    pr_auc = best.get("cv_pr_auc",             best.get("pr_auc",             0))
-    score  = best.get("cv_best_overall_score", best.get("best_overall_score", 0))
-
-    mins = int(total_runtime // 60)
-    secs = int(total_runtime % 60)
+    mins = int(run.runtime_seconds // 60)
+    secs = int(run.runtime_seconds % 60)
     st.caption(f"⏱️ Total pipeline runtime: **{mins}m {secs}s**")
+    st.markdown(
+        f"Measured on **{run.n_holdout:,} customers** held back from the start. They played no "
+        f"part in training, tuning, choosing the model or setting the threshold, so these numbers "
+        f"are the fair estimate for new customers from the same population."
+    )
 
+    _unseen_help = f"Measured on {run.n_holdout:,} customers the model had never seen."
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("🏆 Best Model",      best_name,
-              help="Selected by the highest Best Overall Score.")
-    k2.metric("Best Overall Score", f"{score:.4f}",
-              help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC — averaged over 5-fold cross-validation on the full dataset.")
-    k3.metric("PR-AUC",             f"{pr_auc:.4f}",
-              help="Averaged over 5-fold cross-validation on the full dataset — the most reliable estimate of real-world performance.")
-    k4.metric("Recall",             f"{recall:.4f}",
-              help="Averaged over 5-fold cross-validation on the full dataset — the most reliable estimate of real-world performance.")
-    k5.metric("ROC-AUC",            f"{roc:.4f}",
-              help="Averaged over 5-fold cross-validation on the full dataset — the most reliable estimate of real-world performance.")
+              help="The highest Best Overall Score in the comparison below.")
+    k2.metric("Best Overall Score", f"{holdout['best_overall_score']:.4f}",
+              help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC. " + _unseen_help)
+    k3.metric("PR-AUC",             f"{holdout['pr_auc']:.4f}", help=_unseen_help)
+    k4.metric("Recall",             f"{holdout['recall']:.4f}", help=_unseen_help)
+    k5.metric("ROC-AUC",            f"{holdout['roc_auc']:.4f}", help=_unseen_help)
+
+    st.caption(
+        f"Probabilities are calibrated: on these customers the average predicted risk was "
+        f"**{holdout['mean_probability']:.1%}** and **{holdout['actual_rate']:.1%}** actually left."
+    )
 
     st.markdown("#### Model Comparison  *(sorted by Best Overall Score)*")
+    st.caption(
+        "All models on one basis: 5-fold predictions on the training customers. This is how the "
+        "winner is chosen, so its numbers here differ slightly from the unseen-customer numbers above."
+    )
     cmp_df = build_comparison_table(results)
     st.dataframe(
         cmp_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "PR-AUC": st.column_config.TextColumn(
@@ -486,7 +301,7 @@ def _show_results():
     )
 
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
-    _show_professional_analysis(results, best_name, cmp_df)
+    _show_professional_analysis(best_name, holdout)
 
 
 def _explain_roc(roc: float) -> str:
@@ -550,34 +365,19 @@ def _explain_f1(f1: float) -> str:
                 "Consider reviewing the decision threshold or trying a different execution mode.")
 
 
-def _show_professional_analysis(results: dict, best_name: str, cmp_df):
-    """Plain-language explanation of each model's actual metric results."""
+def _show_professional_analysis(best_name: str, holdout: dict):
+    """Plain-language explanation of the winner's results on unseen customers."""
     _sec("🧠", "What Do the Results Mean?")
 
-    valid = {
-        n: r for n, r in results.items()
-        if r.get("model") is not None and r.get("roc_auc") is not None
-    }
-    if not valid:
-        st.info("No valid models to analyse.")
-        return
-
-    ranked = sorted(valid, key=lambda n: valid[n].get("roc_auc", 0), reverse=True)
-
     st.markdown(
-        "Below is a plain-language explanation of what each model's numbers actually mean - "
+        "Below is a plain-language explanation of what these numbers actually mean - "
         "no technical background needed."
     )
 
-    best   = valid[best_name]
-    roc    = best.get("cv_roc_auc",  best.get("roc_auc", 0))
-    rec    = best.get("cv_recall",   best.get("recall",  0))
-    pr_auc = best.get("cv_pr_auc",   best.get("pr_auc",  0))
-
     st.markdown(f"### 🏆 {best_name}")
-    st.markdown(f"**PR-AUC:** {_explain_pr_auc(pr_auc)}")
-    st.markdown(f"**Recall:** {_explain_recall(rec)}")
-    st.markdown(f"**ROC-AUC:** {_explain_roc(roc)}")
+    st.markdown(f"**PR-AUC:** {_explain_pr_auc(holdout['pr_auc'])}")
+    st.markdown(f"**Recall:** {_explain_recall(holdout['recall'])}")
+    st.markdown(f"**ROC-AUC:** {_explain_roc(holdout['roc_auc'])}")
 
 
 def _show_guide():
@@ -695,8 +495,8 @@ def _show_guide():
     # ── How the app picks the best model ─────────────────────────────────────
     st.markdown("## 🏆 How Does the App Pick the Best Model?")
     st.markdown(
-        "Every model is trained and evaluated on a held-out test set (data the model never saw during training). "
-        "The app then calculates a **Best Overall Score** for each model:\n\n"
+        "Every model is scored on customers it did not see while being fitted, using 5-fold predictions on the "
+        "training customers. The app then calculates a **Best Overall Score** for each model:\n\n"
         "> `Best Overall Score = 45% × PR-AUC + 35% × Recall + 20% × ROC-AUC`\n\n"
         "**Why these weights?**\n\n"
         "- **PR-AUC (45%)** - The most important metric. It rewards models that catch churners accurately "
@@ -706,22 +506,21 @@ def _show_guide():
         "customers are rewarded.\n\n"
         "- **ROC-AUC (20%)** - Measures the overall quality of the model's rankings across all thresholds. "
         "Used as a stability check.\n\n"
-        "The model with the **highest Best Overall Score** is automatically selected as the winner."
+        "The model with the **highest Best Overall Score** is automatically selected as the winner. "
+        "The results you see at the top are then measured on a separate group of customers, held back "
+        "until the winner has been chosen."
     )
 
 
 def _predict_section():
     """New customer prediction UI."""
     from src.data_loader import load_uploaded_file
-    from src.pipeline_builder import raw_clean
-    from src.predictor import predict_new_customers
+    from src.errors import ChurnAppError
+    from src.schema import require_usable
     from src.utils import to_csv_bytes
 
-    profile   = st.session_state.profile
-    results   = st.session_state.results
-    best_name = st.session_state.best_model_name
-    best_pipe = results[best_name]["model"]
-    best      = results[best_name]
+    run      = st.session_state.run
+    artifact = run.artifact
 
     # ── File upload ───────────────────────────────────────────────────────────
     c1, c2 = st.columns([2, 1])
@@ -733,133 +532,94 @@ def _predict_section():
         )
     with c2:
         st.info(
-            "The trained pipeline handles all preprocessing.\n"
+            "The file is checked against the training data before anything is scored.\n"
             "Upload raw customer data - same columns as training, minus the target."
         )
 
     if new_file is None:
         # HuggingFace resets the file uploader on every slider rerun.
         # If we already loaded the file into session_state, keep using it.
-        if st.session_state.get("_pred_X_new") is None:
+        if st.session_state.get("_pred_df_new") is None:
             st.session_state.pred_raw_probs = None
             return
-        # else: fall through and use stored data below
     else:
-        # ── Load & preprocess (cached by file identity) ───────────────────────
-        file_key = f"{new_file.name}_{new_file.size}"
+        file_key = hash(new_file.getvalue())
         if st.session_state.get("_pred_file_key") != file_key:
+            st.session_state.pred_raw_probs = None   # clear old results on new file
+            st.session_state._pred_df_new = None
             try:
                 df_new = load_uploaded_file(new_file)
-                df_new_original = df_new.copy()
-                df_new = raw_clean(df_new)
-
-                from src.feature_engineering import engineer_features as _eng
-                _new_feat_names = st.session_state.get("new_feature_names") or []
-                if _new_feat_names:
-                    _orig_numeric = [c for c in profile["numeric_cols"]
-                                     if c not in set(_new_feat_names)]
-                    df_new, _ = _eng(
-                        df_new, _orig_numeric,
-                        cat_cols=profile.get("categorical_cols"),
-                        bool_cols=profile.get("boolean_cols"),
-                    )
-
-                from src.profiler import detect_id_column
-                auto_id_new = detect_id_column(df_new)
-                known_cols = (profile["numeric_cols"]
-                              + profile["categorical_cols"]
-                              + profile["boolean_cols"])
-                for col in known_cols:
-                    if col not in df_new.columns:
-                        df_new[col] = np.nan
-                X_new   = df_new[[c for c in known_cols if c in df_new.columns]].copy()
-                ids_new = (df_new[auto_id_new] if auto_id_new and auto_id_new in df_new.columns
-                           else pd.Series(range(len(df_new)), name="row_id"))
-
-                st.session_state._pred_file_key  = file_key
-                st.session_state._pred_X_new     = X_new
-                st.session_state._pred_ids_new   = ids_new
-                st.session_state._pred_df_orig   = df_new_original.reset_index(drop=True)
-                st.session_state.pred_raw_probs  = None   # clear old results on new file
-            except Exception as e:
-                st.error(f"Could not load file: {e}")
+                report = artifact.check(df_new)
+                require_usable(report)
+            except ChurnAppError as e:
+                st.error(str(e))
                 return
+            st.session_state._pred_file_key = file_key
+            st.session_state._pred_df_new   = df_new.reset_index(drop=True)
+            st.session_state._pred_report   = report
 
-    X_new        = st.session_state._pred_X_new
-    ids_new      = st.session_state._pred_ids_new
-    df_new_orig  = st.session_state._pred_df_orig
-    st.success(f"✅ Loaded **{len(X_new):,}** new customers")
+    df_new = st.session_state._pred_df_new
+    report = st.session_state._pred_report
+    st.success(f"✅ Loaded **{len(df_new):,}** new customers")
+
+    allow_missing = True
+    if report.missing:
+        st.error(
+            f"**{len(report.missing)} of {report.n_columns} columns the model uses are missing:** "
+            f"{', '.join(report.missing)}. Predictions without them are less accurate."
+        )
+        allow_missing = st.checkbox(
+            "Score anyway, treating the missing columns as unknown", key="pred_allow_missing")
+    for _note in report.warnings():
+        st.warning(_note)
 
     # ── Threshold selector ────────────────────────────────────────────────────
-    auto_thr   = float(best.get("best_threshold", 0.50))
-    thr_curve  = best.get("threshold_curve")
+    auto_thr  = round(float(artifact.threshold), 2)
+    thr_curve = run.holdout["threshold_curve"]
 
     st.markdown("#### Sensitivity Setting")
     sl_col, hint_col = st.columns([3, 2])
     with sl_col:
         selected_thr = st.slider(
             "Decision Threshold",
-            min_value=0.20, max_value=0.80,
-            value=auto_thr, step=0.05,
+            min_value=0.02, max_value=0.90,
+            value=auto_thr, step=0.01,
             help=(
-                "Controls the trade-off between catching churners and avoiding false alarms.\n\n"
-                "Lower → more customers flagged as churners (higher Recall, more false alarms).\n\n"
-                "Higher → only high-confidence predictions flagged (fewer false alarms, may miss some churners)."
+                "A customer is flagged when their churn probability reaches this value.\n\n"
+                "Lower → more customers flagged (higher Recall, more false alarms).\n\n"
+                "Higher → fewer customers flagged (fewer false alarms, may miss some churners)."
             ),
         )
-        if thr_curve is not None:
-            row = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
-            est_rec  = float(row["recall"].values[0])
-            est_prec = float(row["precision"].values[0])
-            st.caption(
-                f"At threshold **{selected_thr:.2f}** — "
-                f"estimated Recall ≈ **{est_rec:.0%}** · "
-                f"estimated Precision ≈ **{est_prec:.0%}**"
-            )
+        row = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
+        st.caption(
+            f"At threshold **{selected_thr:.2f}** — measured on customers the model had not seen: "
+            f"Recall **{float(row['recall'].values[0]):.0%}** · "
+            f"Precision **{float(row['precision'].values[0]):.0%}**"
+        )
 
-        # ── Why this threshold? ───────────────────────────────────────────────
-        fold_thrs = best.get("cv_fold_thresholds") or []
-        cv_folds  = best.get("cv_folds", 5)
         with st.expander(f"Why {auto_thr:.2f}?"):
-            fold_detail = ""
-            if fold_thrs:
-                fold_detail = (
-                    "\n\n**Per-fold optimal thresholds:**\n\n"
-                    + "  ".join(f"`Fold {i+1}: {t:.2f}`" for i, t in enumerate(fold_thrs))
-                    + f"\n\n**Average → {auto_thr:.2f}**"
-                )
             st.markdown(
-                f"The threshold **{auto_thr:.2f}** was chosen automatically by "
-                f"**{cv_folds}-fold cross-validation**.\n\n"
-                f"In each fold, the model tested every threshold from 0.20 to 0.70 (step 0.02) "
-                f"and selected the one that maximised **F1 score** — the best balance "
-                f"between catching churners (Recall) and avoiding false alarms (Precision).\n\n"
-                f"The final threshold is the **average across all {cv_folds} folds**, "
-                f"making it more robust than picking from a single test set "
-                f"that might have been unusually easy or hard."
-                + fold_detail
+                f"**{auto_thr:.2f}** gave the highest **F1 score**, the balance between catching "
+                f"churners (Recall) and avoiding false alarms (Precision). Every threshold from 0.02 "
+                f"to 0.90 was tested on calibrated predictions for customers each fold had not seen."
             )
 
     with hint_col:
-        if selected_thr <= 0.40:
-            st.info("🔍 **High Recall mode** — catches the most churners, but also flags some loyal customers as at-risk.")
-        elif selected_thr <= 0.55:
-            st.info("⚖️ **Balanced mode** — best F1 balance between catching churners and avoiding false alarms.")
+        if abs(selected_thr - auto_thr) <= 0.02:
+            st.info("⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
+        elif selected_thr < auto_thr:
+            st.info("🔍 **More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
         else:
-            st.info("🎯 **High Precision mode** — only flags customers the model is very confident about. Fewer false alarms, but may miss some real churners.")
+            st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
 
     # ── Predict button ────────────────────────────────────────────────────────
-    if st.button("🔮 Predict Churn", type="primary", key="predict_btn"):
+    if st.button("🔮 Predict Churn", type="primary", key="predict_btn", disabled=not allow_missing):
         with st.spinner("Running predictions…"):
             try:
-                # Align X_new columns exactly to what the model was trained on
-                train_cols = st.session_state.get("train_cols")
-                if train_cols:
-                    X_new = X_new.reindex(columns=train_cols, fill_value=np.nan)
-                raw_probs = best_pipe.predict_proba(X_new)[:, 1]
-                st.session_state.pred_raw_probs   = raw_probs
-                st.session_state.pred_ids         = ids_new
-                st.session_state.pred_df_orig     = df_new_orig
+                st.session_state.pred_raw_probs = artifact.predict_proba(df_new, allow_missing=True)
+            except ChurnAppError as e:
+                st.error(str(e))
+                return
             except Exception as e:
                 st.error(f"Prediction failed: {e}")
                 with st.expander("Traceback"):
@@ -871,75 +631,54 @@ def _predict_section():
     if raw_probs is None:
         return
 
-    ids_display  = st.session_state.pred_ids
-    df_orig_disp = st.session_state.pred_df_orig
-
-    churn_mask     = raw_probs >= selected_thr
-    churn_pred_col = np.where(churn_mask, "Yes", "No")
-    total          = len(raw_probs)
-    churning       = int(churn_mask.sum())
-    not_churning   = total - churning
-    pct_churn      = churning / max(total, 1)
+    flagged_mask = raw_probs >= selected_thr
+    total        = len(raw_probs)
+    n_flagged    = int(flagged_mask.sum())
 
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Customers",  f"{total:,}")
-    m2.metric("Will Churn",       f"{churning:,}")
-    m3.metric("Will Not Churn",   f"{not_churning:,}")
-    m4.metric("% Churn",          f"{pct_churn:.1%}")
+    m2.metric("Flagged At Risk",  f"{n_flagged:,}")
+    m3.metric("Not Flagged",      f"{total - n_flagged:,}")
+    m4.metric("% Flagged",        f"{n_flagged / max(total, 1):.1%}")
 
-    # ── Churn Rate Monitoring ─────────────────────────────────────────────────
-    training_churn_rate = st.session_state.get("churn_rate")
-    if training_churn_rate is not None:
-        diff_pp  = (pct_churn - training_churn_rate) * 100
-        abs_diff = abs(diff_pp)
+    # ── Risk compared with history ────────────────────────────────────────────
+    expected = float(raw_probs.mean())
+    historic = run.churn_rate
+    diff_pp  = (expected - historic) * 100
+    # A small file wanders by chance, so the alert scales with its size
+    tolerance_pp = max(5.0, 300 * float(raw_probs.std()) / np.sqrt(max(total, 1)))
 
-        st.markdown("#### Churn Rate Monitor")
-        cr1, cr2, cr3 = st.columns(3)
-        cr1.metric(
-            "Historical Churn Rate", f"{training_churn_rate:.1%}",
-            help="Churn rate observed in the training dataset.",
-        )
-        cr2.metric(
-            "Predicted Churn Rate", f"{pct_churn:.1%}",
-            help="Churn rate predicted for this uploaded batch.",
-        )
-        cr3.metric(
-            "Difference",
-            f"{diff_pp:+.1f} pp",
-            delta=f"{diff_pp:+.1f} pp",
-            delta_color="inverse",
-            help="Difference in percentage points between predicted and historical churn rates.",
-        )
+    st.markdown("#### Risk Compared With History")
+    cr1, cr2, cr3 = st.columns(3)
+    cr1.metric("Historical Churn Rate", f"{historic:.1%}",
+               help="Churn rate observed in the training dataset.")
+    cr2.metric("Average Predicted Risk", f"{expected:.1%}",
+               help="The average churn probability across this file: the share of these customers the model expects to leave.")
+    cr3.metric("Difference", f"{diff_pp:+.1f} pp", delta=f"{diff_pp:+.1f} pp", delta_color="inverse",
+               help="Difference in percentage points between average predicted risk and the historical churn rate.")
 
-        if abs_diff > 10:
-            st.warning(
-                f"⚠️ **Distribution shift detected**: the predicted churn rate ({pct_churn:.1%}) "
-                f"differs from the historical training rate ({training_churn_rate:.1%}) by "
-                f"**{abs_diff:.1f} percentage points**. This customer batch may differ "
-                "significantly from the training population, or the decision threshold may need adjustment."
-            )
-        else:
-            st.success(
-                f"✅ Predicted churn rate ({pct_churn:.1%}) is consistent with the "
-                f"historical training rate ({training_churn_rate:.1%}) — "
-                f"difference: {abs_diff:.1f} pp."
-            )
+    if total < _MIN_CUSTOMERS_TO_COMPARE:
+        st.info(f"{total} customers are too few to compare with the historical churn rate.")
+    elif abs(diff_pp) > tolerance_pp:
+        st.warning(
+            f"⚠️ This file's average predicted risk ({expected:.1%}) is {abs(diff_pp):.1f} points away "
+            f"from the historical churn rate ({historic:.1%}). These customers may really be riskier or "
+            "safer, or they may differ from the customers the model learned from."
+        )
+    else:
+        st.success(
+            f"✅ This file's average predicted risk ({expected:.1%}) is in line with the historical "
+            f"churn rate ({historic:.1%})."
+        )
 
     st.divider()
 
-    if df_orig_disp is not None:
-        display_df = df_orig_disp.copy()
-        display_df["Churn Prediction"]  = churn_pred_col
-        display_df["Churn Probability"] = np.round(raw_probs, 4)
-    else:
-        display_df = pd.DataFrame({
-            "customer_id":       ids_display.values,
-            "churn_prediction":  churn_pred_col,
-            "churn_probability": np.round(raw_probs, 4),
-        })
+    display_df = df_new.copy()
+    display_df["Flagged At Risk"]   = np.where(flagged_mask, "Yes", "No")
+    display_df["Churn Probability"] = np.round(raw_probs, 4)
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇️ Download Predictions CSV",
@@ -952,14 +691,7 @@ def _predict_section():
 # ══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE INITIALISATION
 # ══════════════════════════════════════════════════════════════════════════════
-for _k in [
-    "df", "profile", "X_raw", "y", "ids",
-    "X_train", "X_test", "y_train", "y_test",
-    "new_feature_names", "results", "best_model_name",
-    "lib_status", "predictions", "training_done",
-    "selected_info", "total_runtime", "churn_rate", "is_imbalanced",
-    "df_new_original",
-]:
+for _k in ["df", "run", "training_done"]:
     if _k not in st.session_state:
         st.session_state[_k] = None
 
@@ -991,7 +723,7 @@ with _tab_pipeline:
         st.info(
             "**Requirements:**\n"
             "- At least 100 rows\n"
-            "- A binary churn column (Yes/No, 1/0, True/False)\n"
+            "- A churn column with two values, such as Yes/No or 1/0\n"
             "- CSV or Excel format\n"
             "- Auto-detects delimiter & encoding"
         )
@@ -1023,10 +755,8 @@ with _tab_pipeline:
                 _bio.name = hist_file.name
                 _df = load_uploaded_file(_bio)
                 _prog.progress(10, text="Done ✅")
-                if st.session_state.df is None or len(st.session_state.df) != len(_df):
-                    for _k in ["profile","X_raw","y","ids","X_train","X_test","y_train","y_test",
-                               "new_feature_names","results","best_model_name","predictions","training_done"]:
-                        st.session_state[_k] = None
+                st.session_state.run = None
+                st.session_state.training_done = None
                 st.session_state.df      = _df
                 st.session_state._df_hash = _file_hash
                 time.sleep(0.2)
@@ -1044,7 +774,7 @@ with _tab_pipeline:
 
     st.success(f"✅ Loaded **{len(df):,} rows × {df.shape[1]} columns**")
     with st.expander("Preview first rows", expanded=False):
-        st.dataframe(df.head(5), use_container_width=True)
+        st.dataframe(df.head(5), width="stretch")
 
     st.divider()
 
@@ -1069,15 +799,17 @@ with _tab_pipeline:
             st.caption(f"Auto-detected: **{auto_id}**")
 
     with cb:
-        if auto_target not in cols_list:
-            auto_target = cols_list[0] if cols_list else None
+        _first_guess = auto_target or next(
+            (c for c in cols_list if c != auto_id and df[c].nunique() == 2), cols_list[0])
         target_col = st.selectbox(
             "Churn / Target column ★",
             options=cols_list,
-            index=cols_list.index(auto_target) if auto_target in cols_list else 0,
+            index=cols_list.index(_first_guess),
         )
         if auto_target:
             st.caption(f"Auto-detected: **{auto_target}**")
+        else:
+            st.caption("Could not detect it. Please choose the churn column.")
 
     with cc1:
         st.metric("Rows", f"{len(df):,}")
@@ -1085,30 +817,80 @@ with _tab_pipeline:
     with cc2:
         st.metric("Columns", df.shape[1])
 
+    from src.errors import ChurnAppError
+    from src.pipeline_builder import convert_target, suggest_positive_label, target_labels
+    from src.workflow import screen_columns
+
+    _labels = target_labels(df[target_col])
+    if len(_labels) != 2:
+        with cc3:
+            st.metric("Values in target", len(_labels))
+        st.error(
+            f"**{target_col}** has {len(_labels)} different values. The churn column needs exactly two: "
+            "one for customers who left and one for customers who stayed. Choose the right column above."
+        )
+        st.stop()
+
+    _suggested, _confident = suggest_positive_label(df[target_col], target_col)
+    _label_strs = [str(v) for v in _labels]
+    positive_label_str = st.selectbox(
+        "Which value means the customer left?",
+        options=_label_strs,
+        index=_label_strs.index(str(_suggested)),
+        key=f"positive_label_{st.session_state.get('_df_hash')}_{target_col}",
+        help="Every prediction depends on this. Choosing the wrong value would invert the model.",
+    )
+    positive_label = _labels[_label_strs.index(positive_label_str)]
+    if not _confident:
+        st.warning(
+            f"The values in **{target_col}** don't say which one means the customer left. "
+            f"**{positive_label_str}** is only a guess, because it is the rarer value. Please check it."
+        )
+
     with cc3:
-        try:
-            _target_series = df[target_col].astype(str).str.strip().str.lower()
-            _churn_mask    = _target_series.isin(["1", "yes", "true", "churn", "1.0"])
-            _n_churn       = int(_churn_mask.sum())
-            _pct_churn     = _n_churn / len(df) if len(df) > 0 else 0
-            st.metric(
-                "Churned Customers",
-                f"{_n_churn:,} ({_pct_churn:.1%})",
-                help="Number and percentage of customers who churned in the historical data.",
-            )
-        except Exception:
-            pass
+        _y_preview = convert_target(df[target_col], positive_label).dropna()
+        st.metric(
+            "Churned Customers",
+            f"{int(_y_preview.sum()):,} ({_y_preview.mean():.1%})",
+            help="Number and percentage of customers who churned in the historical data.",
+        )
+
+    # ── Leak screening ────────────────────────────────────────────────────────
+    _leak_key = (st.session_state.get("_df_hash"), target_col, id_col, positive_label_str)
+    if st.session_state.get("_leak_key") != _leak_key:
+        with st.spinner("Checking columns for data leaks…"):
+            try:
+                st.session_state["_leak_findings"] = screen_columns(df, target_col, id_col, positive_label)
+            except ChurnAppError as _e:
+                st.error(str(_e))
+                st.stop()
+        st.session_state["_leak_key"] = _leak_key
+    _findings = st.session_state["_leak_findings"]
+
+    exclude_cols = []
+    if _findings:
+        st.warning(
+            "⚠️ **Possible data leaks.** A column that is only known after a customer leaves makes a model "
+            "look excellent in testing and useless in real life. These columns are left out unless you "
+            "know they are available before the customer leaves:\n\n"
+            + "\n".join(f"- **{f.column}**: {f.reason}" for f in _findings)
+        )
+        _names = [f.column for f in _findings]
+        exclude_cols = st.multiselect(
+            "Columns to leave out of the model", options=_names, default=_names,
+            key=f"exclude_cols_{st.session_state.get('_df_hash')}_{target_col}",
+        )
 
     st.divider()
 
     # ── Predictive Signal Assessment ──────────────────────────────────────────
-    _show_signal_assessment(df, target_col, id_col)
+    _show_signal_assessment(df, target_col, id_col, positive_label, exclude_cols)
 
     # ── Steps 3–11: Run Pipeline ──────────────────────────────────────────────
     from src.config import PRODUCTION_MODELS
     _sec("🚀", "Step 3 - Run Full Machine Learning Pipeline")
 
-    from src.config import SEARCH_PRESETS, DEFAULT_SEARCH_DEPTH, PIPELINE_CONFIG
+    from src.config import SEARCH_PRESETS, DEFAULT_SEARCH_DEPTH
 
     model_col, btn_col = st.columns([3, 1])
     with model_col:
@@ -1145,7 +927,7 @@ with _tab_pipeline:
         st.caption(
             f"Training: **{', '.join(selected_models)}**  ·  "
             f"Optuna trials: **{budget['optuna_trials']}**  ·  "
-            f"CV folds: **{PIPELINE_CONFIG['cv_folds']}**  ·  Tuning: **ROC-AUC**"
+            f"CV folds: **{budget['hpo_cv_folds']}**  ·  Tuning: **ROC-AUC**"
         )
         with st.expander("⚙️ Runtime details", expanded=False):
             from src.runtime_env import ON_CLOUD as _oc, N_JOBS as _nj, CPU_SOURCE as _src
@@ -1170,15 +952,14 @@ with _tab_pipeline:
                 "\n💡 **Not sure?** Leave 'All Models' selected - the app will train all five and automatically pick the best one."
             )
     with btn_col:
-        run = st.button("🚀 Run Pipeline", type="primary", use_container_width=True)
+        run = st.button("🚀 Run Pipeline", type="primary", width="stretch")
         _eta_low, _eta_high = _estimate_runtime(df, selected_models, budget)
         st.caption(f"⏱️ Est. runtime: **{_eta_low} - {_eta_high}**")
 
     if run:
-        for _k in ["results", "best_model_name", "training_done", "predictions",
-                   "selected_info", "total_runtime", "churn_rate", "is_imbalanced"]:
-            st.session_state[_k] = None
-        _run_pipeline(df, id_col, target_col, selected_models, budget)
+        st.session_state.run = None
+        st.session_state.training_done = None
+        _run_pipeline(df, id_col, target_col, selected_models, budget, positive_label, exclude_cols)
 
     if st.session_state.training_done:
         _show_results()
@@ -1193,6 +974,6 @@ with _tab_pipeline:
     st.divider()
     st.caption(
         "Churn Analytics Studio  ·  Built with Streamlit & scikit-learn  ·  "
-        "Zero data leakage  ·  Best model selected by PR-AUC · Recall · ROC-AUC  ·  "
+        "Best model selected by PR-AUC · Recall · ROC-AUC  ·  "
         "Models: Logistic Regression, Random Forest, XGBoost, LightGBM, CatBoost"
     )

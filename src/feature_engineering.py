@@ -1,24 +1,25 @@
 """
 Step 4 — Feature Engineering.
 
-Two-phase approach:
-  Phase 1  engineer_features()          — create candidate features (no target, no leakage)
-  Phase 2  select_engineered_features() — keep only candidates with MI signal on training data
+The set of engineered features is decided once, on the training rows, and
+stored in a FeatureSpec. After that, apply_features() is a pure per-row
+calculation: a customer gets the same values whether scored alone or in a
+file of a million, because no statistic of the current batch is involved.
 
-Phase 1 generates truly dataset-agnostic features only:
+  plan_features()               candidates, from X_train only
+  select_engineered_features()  keeps candidates with signal, from X_train / y_train only
+  fit_feature_spec()            both of the above, returning the frozen spec
+  apply_features()              the calculation itself
+
+Candidates are dataset-agnostic:
   • Generic pairwise ratios for top positive-numeric columns (ranked by variance)
   • Log-transforms for highly-skewed positive numerics
   • Boolean service count (feat_n_active_services) — sum of all binary flag columns
-
-Phase 2 (called after train/test split in the pipeline):
-  • Removes near-duplicate features (pairwise correlation > 0.95)
-  • Keeps only features with mutual information > threshold on training data
-  • Returns the selected subset — applied to both train and test sets
-
-Zero leakage: Phase 1 uses only X (no target).  Phase 2 uses only X_train / y_train.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -26,101 +27,90 @@ import pandas as pd
 # ── Generic feature generation limits ────────────────────────────────────────
 _MAX_RATIO_COLS  = 5    # top-N positive numeric cols used for generic pairwise ratios
 _MAX_RATIO_PAIRS = 10   # hard cap on generated ratio features
+_MIN_SKEW_FOR_LOG = 1.5
+_BOOL_COUNT_NAME = "feat_n_active_services"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Phase 1 — Candidate generation (no target, no leakage)
-# ══════════════════════════════════════════════════════════════════════════════
+@dataclass
+class FeatureSpec:
+    ratios: list[tuple[str, str, str]] = field(default_factory=list)  # (name, numerator, denominator)
+    logs: list[tuple[str, str]] = field(default_factory=list)         # (name, source column)
+    bool_count_cols: list[str] = field(default_factory=list)
 
-def engineer_features(
-    df: pd.DataFrame,
+    @property
+    def names(self) -> list[str]:
+        names = [r[0] for r in self.ratios] + [l[0] for l in self.logs]
+        return names + ([_BOOL_COUNT_NAME] if self.bool_count_cols else [])
+
+    def restricted_to(self, keep: list[str]) -> "FeatureSpec":
+        kept = set(keep)
+        return FeatureSpec(
+            ratios=[r for r in self.ratios if r[0] in kept],
+            logs=[l for l in self.logs if l[0] in kept],
+            bool_count_cols=self.bool_count_cols if _BOOL_COUNT_NAME in kept else [],
+        )
+
+
+def apply_features(X: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
+    """Add the engineered columns. Each value depends only on that customer's own row."""
+    new_cols: dict[str, pd.Series] = {}
+    for name, numerator, denominator in spec.ratios:
+        ratio = X[numerator] / X[denominator].replace(0, np.nan)
+        new_cols[name] = ratio.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    for name, col in spec.logs:
+        new_cols[name] = np.log1p(X[col].fillna(0.0).clip(lower=0.0))
+    if spec.bool_count_cols:
+        new_cols[_BOOL_COUNT_NAME] = X[spec.bool_count_cols].fillna(0.0).sum(axis=1)
+    if not new_cols:
+        return X
+    return pd.concat([X, pd.DataFrame(new_cols, index=X.index)], axis=1)
+
+
+def plan_features(
+    X_train: pd.DataFrame,
     numeric_cols: list[str],
-    cat_cols: list[str] | None = None,
     bool_cols: list[str] | None = None,
-) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Create candidate engineered features using only dataset-agnostic logic.
-    No target information is used.
+) -> FeatureSpec:
+    """Decide the candidate features from the training rows. No target is used."""
+    bool_cols = [c for c in (bool_cols or []) if c in X_train.columns]
+    valid_num = [c for c in numeric_cols if c in X_train.columns]
+    spec = FeatureSpec()
 
-    Parameters
-    ----------
-    df           : DataFrame after raw_clean (booleans already 0/1)
-    numeric_cols : numeric column names present in df
-    cat_cols     : unused, kept for interface compatibility
-    bool_cols    : binary/boolean column names — values already 0/1 (optional)
-
-    Returns
-    -------
-    (augmented_df, candidate_feature_names)
-    """
-    df = df.copy()
-    new_cols: list[str] = []
-
-    bool_cols = [c for c in (bool_cols or []) if c in df.columns]
-    valid_num  = [c for c in numeric_cols if c in df.columns]
-
-    # ── Generic pairwise ratios for positive numeric columns ──────────────────
-    # Selects top-N columns by variance; creates ratio features between every pair.
-    # Works on any dataset regardless of column names.
     pos_num = [c for c in valid_num
-               if (df[c].dropna() >= 0).all() and df[c].dropna().std() > 0]
-    if pos_num:
-        pos_num = sorted(pos_num, key=lambda c: float(df[c].var()), reverse=True)
-        pos_num = pos_num[:_MAX_RATIO_COLS]
-        pairs_created = 0
-        for i, c1 in enumerate(pos_num):
-            for c2 in pos_num[i + 1:]:
-                if pairs_created >= _MAX_RATIO_PAIRS:
-                    break
-                name = f"feat_ratio_{_short(c1)}_{_short(c2)}"
-                if name in new_cols:
-                    continue
-                denom = df[c2].replace(0, np.nan)
-                df[name] = df[c1] / denom
-                new_cols.append(name)
-                pairs_created += 1
+               if (X_train[c].dropna() >= 0).all() and X_train[c].dropna().std() > 0]
+    pos_num = sorted(pos_num, key=lambda c: float(X_train[c].var()), reverse=True)[:_MAX_RATIO_COLS]
+    seen: set[str] = set()
+    for i, c1 in enumerate(pos_num):
+        for c2 in pos_num[i + 1:]:
+            name = f"feat_ratio_{_short(c1)}_{_short(c2)}"
+            if len(spec.ratios) < _MAX_RATIO_PAIRS and name not in seen:
+                spec.ratios.append((name, c1, c2))
+                seen.add(name)
 
-    # ── Log-transform highly-skewed positive numerics ─────────────────────────
     for col in valid_num:
-        if col in new_cols:
-            continue
-        try:
-            skew = float(df[col].dropna().skew())
-        except Exception:
-            continue
-        if abs(skew) > 1.5 and (df[col].dropna() >= 0).all():
-            name = f"feat_{col}_log"
-            df[name] = np.log1p(df[col].fillna(0))
-            new_cols.append(name)
+        values = X_train[col].dropna()
+        if abs(float(values.skew())) > _MIN_SKEW_FOR_LOG and (values >= 0).all():
+            spec.logs.append((f"feat_{col}_log", col))
 
-    # ── Boolean service count ─────────────────────────────────────────────────
-    # Number of active binary-flag features (e.g. subscriptions, add-ons).
     if len(bool_cols) >= 2:
-        bool_df = df[bool_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-        name = "feat_n_active_services"
-        df[name] = bool_df.sum(axis=1)
-        new_cols.append(name)
-
-    # ── Fill NaNs and drop near-constant candidates ───────────────────────────
-    for c in new_cols:
-        df[c] = df[c].fillna(0)
-
-    keep: list[str] = []
-    for c in new_cols:
-        try:
-            if df[c].nunique() >= 2 and float(df[c].std()) > 0:
-                keep.append(c)
-            else:
-                df.drop(columns=[c], inplace=True, errors="ignore")
-        except Exception:
-            keep.append(c)
-
-    return df, keep
+        spec.bool_count_cols = bool_cols
+    return spec
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Phase 2 — Statistical selection (uses X_train + y_train only)
-# ══════════════════════════════════════════════════════════════════════════════
+def fit_feature_spec(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    numeric_cols: list[str],
+    bool_cols: list[str] | None = None,
+) -> FeatureSpec:
+    """Plan the candidates, then keep those that vary and carry signal on the training rows."""
+    spec = plan_features(X_train, numeric_cols, bool_cols)
+    augmented = apply_features(X_train, spec)
+    varying = [c for c in spec.names
+               if augmented[c].nunique() >= 2 and float(augmented[c].std()) > 0]
+    selected = select_engineered_features(augmented, y_train, varying)
+    return spec.restricted_to(selected)
+
 
 def select_engineered_features(
     X_train: pd.DataFrame,
@@ -145,37 +135,25 @@ def select_engineered_features(
 
     X_cand = X_train[valid].fillna(0)
 
-    # ── Step 1: Correlation deduplication ────────────────────────────────────
     if len(valid) > 1:
-        try:
-            corr    = X_cand.corr().abs()
-            upper   = corr.where(np.triu(np.ones(corr.shape, dtype=bool), k=1))
-            to_drop: set[str] = set()
-            for col in upper.columns:
-                partners = upper.index[upper[col] > 0.95].tolist()
-                for p in partners:
-                    loser = col if X_cand[col].var() < X_cand[p].var() else p
-                    to_drop.add(loser)
-            valid  = [c for c in valid if c not in to_drop]
-            X_cand = X_train[valid].fillna(0)
-        except Exception:
-            pass
+        corr    = X_cand.corr().abs()
+        upper   = corr.where(np.triu(np.ones(corr.shape, dtype=bool), k=1))
+        to_drop: set[str] = set()
+        for col in upper.columns:
+            for partner in upper.index[upper[col] > 0.95]:
+                to_drop.add(col if X_cand[col].var() < X_cand[partner].var() else partner)
+        valid  = [c for c in valid if c not in to_drop]
+        X_cand = X_train[valid].fillna(0)
 
     if not valid:
         return []
 
-    # ── Step 2: Mutual-information filter ────────────────────────────────────
-    try:
-        mi_scores = mutual_info_classif(
-            X_cand, y_train,
-            discrete_features=False,
-            random_state=42,
-        )
-        selected = [c for c, mi in zip(valid, mi_scores) if mi >= min_mi]
-    except Exception:
-        selected = valid
-
-    return selected
+    mi_scores = mutual_info_classif(
+        X_cand, y_train,
+        discrete_features=False,
+        random_state=42,
+    )
+    return [c for c, mi in zip(valid, mi_scores) if mi >= min_mi]
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────

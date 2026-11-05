@@ -28,6 +28,9 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from .errors import DataValidationError
+from .pipeline_builder import convert_target, normalize_column_name, raw_clean
+
 _DEFAULT_MAX_ROWS = 20_000
 
 warnings.filterwarnings("ignore")
@@ -128,17 +131,6 @@ def _information_gain(x: pd.Series, y: pd.Series) -> float:
         return 0.0
 
 
-# ── Convert raw target to binary ──────────────────────────────────────────────
-
-def _binarise_target(s: pd.Series) -> pd.Series:
-    s = s.dropna()
-    if pd.api.types.is_numeric_dtype(s):
-        return (s != 0).astype(int)
-    low = s.astype(str).str.strip().str.lower()
-    pos = {"1", "yes", "true", "y", "t", "churn", "churned", "left", "exited", "cancelled", "canceled"}
-    return low.isin(pos).astype(int)
-
-
 # ── Normalise raw scores to 0–1 ───────────────────────────────────────────────
 
 def _norm_numeric(d: float, r: float, mi: float) -> float:
@@ -217,44 +209,40 @@ def assess_predictive_signal(
     target_col: str,
     id_col: str | None = None,
     max_rows: int | None = None,
+    positive_label=None,
+    only_columns: list[str] | None = None,
 ) -> dict:
     """
     Runs entirely on raw data. Returns the signal assessment dict.
     Designed to finish in < 5 seconds on typical datasets.
+
+    only_columns limits the table to what the model will really use, so it
+    never credits a column that profiling is going to drop.
     """
     if max_rows is None:
         max_rows = _DEFAULT_MAX_ROWS
 
-    # Work on a sample for speed; stratify on target if possible
-    if len(df) > max_rows:
-        try:
-            df = df.groupby(target_col, group_keys=False).apply(
-                lambda g: g.sample(min(len(g), max_rows // 2), random_state=42)
-            ).reset_index(drop=True)
-        except Exception:
-            df = df.sample(max_rows, random_state=42).reset_index(drop=True)
-
-    # Standardise column names (same logic as raw_clean)
-    df = df.copy()
-    df.columns = [c.strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
-    target_std = target_col.strip().lower().replace(" ", "_").replace("-", "_")
-    id_std     = id_col.strip().lower().replace(" ", "_").replace("-", "_") if id_col else None
-
-    if target_std not in df.columns:
+    if target_col not in df.columns:
         return _empty_result("Target column not found.")
+    try:
+        target = convert_target(df[target_col], positive_label).dropna().astype(int)
+    except DataValidationError as exc:
+        return _empty_result(str(exc))
 
-    y_raw = df[target_std]
-    y     = _binarise_target(y_raw)
+    # Work on a sample for speed, keeping the churn rate
+    if len(target) > max_rows:
+        target = target.groupby(target, group_keys=False).sample(
+            frac=max_rows / len(target), random_state=42)
+
+    y = target
     if y.nunique() < 2:
         return _empty_result("Target column has only one class — cannot assess signal.")
 
-    # Align index
-    df = df.loc[y.index]
-    y  = y.loc[df.index]
-
-    # Drop target and ID
-    drop_cols = [c for c in [target_std, id_std] if c and c in df.columns]
-    features  = df.drop(columns=drop_cols, errors="ignore")
+    id_std   = normalize_column_name(id_col) if id_col else None
+    features = raw_clean(df.loc[y.index].drop(columns=[target_col]))
+    features = features.drop(columns=[id_std], errors="ignore")
+    if only_columns is not None:
+        features = features[[c for c in features.columns if c in set(only_columns)]]
 
     feature_rows: list[dict] = []
 

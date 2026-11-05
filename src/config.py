@@ -9,7 +9,18 @@ TEST_SIZE = 0.20
 # ── Column-drop thresholds ────────────────────────────────────────────────────
 NULL_THRESHOLD           = 0.50
 NEAR_CONSTANT_THRESHOLD  = 0.98
+NEAR_CONSTANT_MIN_RARE   = 10     # a rare value seen this often can still carry signal
 HIGH_CARDINALITY_LIMIT   = 50
+
+# ── Minimum data for a meaningful model ───────────────────────────────────────
+MIN_TRAINING_ROWS      = 100
+MIN_ROWS_PER_CLASS     = 20
+WARN_ROWS_PER_CLASS    = 100
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+OOF_FOLDS              = 5
+LEAK_FEATURE_AUC       = 0.95     # one column alone predicting churn this well is a leak
+SUSPICIOUS_HOLDOUT_AUC = 0.995
 
 # ── Dataset size buckets ──────────────────────────────────────────────────────
 LARGE_DATASET_ROWS      = 50_000
@@ -94,8 +105,13 @@ CHURN_HINTS = [
     "churn", "is_churned", "churned", "left_company", "attrition",
     "is_churn", "target", "label", "churned_flag", "left", "exited",
     "cancelled", "canceled", "subscription_status",
+    "נטש", "נטישה", "נוטש", "עזב",
 ]
 LEAK_HINTS = [
-    "date_churned", "churn_date", "exit_date", "cancellation_date",
-    "last_activity_after_churn", "days_since_churn", "churn_reason",
+    "נטישה_", "סיבת_נטישה", "תאריך_נטישה", "churn", "attrit", "cancel", "terminat", "exit_", "_exit", "deactivat",
+    "unsubscrib", "closure", "close_date", "closed_date", "closing_date",
+]
+PERSONAL_DATA_HINTS = [
+    "name", "surname", "first_name", "firstname", "last_name", "lastname",
+    "full_name", "fullname", "customer_name", "phone", "mobile", "email", "address",
 ]

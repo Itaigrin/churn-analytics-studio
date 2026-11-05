@@ -20,9 +20,20 @@ Upload your historical customer data, train 5 production-grade ML models, and ge
 
 - Automatic data profiling and predictive signal assessment
 - 5 production models: Logistic Regression, Random Forest, XGBoost, LightGBM, CatBoost
-- Best model selected by: `0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC`
-- Zero data leakage — all preprocessing inside sklearn Pipelines
-- Predict new customers with a single CSV upload
+- Best model selected by: `0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC`, with every model scored on one common basis
+- Results reported on customers held back from training, tuning, model choice and threshold choice
+- Calibrated probabilities: among customers given 30% risk, about 30% really leave
+- Screening for columns that leak the answer (single-column leaks; a person still has to review the data)
+- Predict new customers with a single CSV upload. Each customer's score depends only on their own row, and files that don't match the training data are stopped
+
+## Development
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+`python tools/benchmark.py <data_folder>` trains on one file and scores a separate one, to measure real performance.
 
 ## Quick Start (Online)
 
@@ -38,7 +49,7 @@ Running locally means your customer data stays entirely on your own computer.
 
 ### Requirements
 
-- Python 3.10 or higher ([download](https://www.python.org/downloads/))
+- Python 3.12 or higher ([download](https://www.python.org/downloads/))
 - Git ([download](https://git-scm.com/downloads)) — or download the ZIP directly from GitHub
 
 ### Step 1 — Get the code
