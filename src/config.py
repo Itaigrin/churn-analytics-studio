@@ -25,8 +25,6 @@ SUSPICIOUS_HOLDOUT_AUC = 0.995
 # ── Dataset size buckets ──────────────────────────────────────────────────────
 LARGE_DATASET_ROWS      = 50_000
 VERY_LARGE_DATASET_ROWS = 200_000
-SHAP_SAMPLE_SIZE        = 300
-PERMUTATION_SAMPLE_SIZE = 2_000
 
 # ── Class-imbalance thresholds ────────────────────────────────────────────────
 IMBALANCE_LOW  = 0.20

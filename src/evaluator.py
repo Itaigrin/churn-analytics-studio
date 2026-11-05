@@ -30,6 +30,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
+from .business import lift_table
 from .calibration import CalibratedModel, PlattCalibrator
 from .config import (
     OOF_FOLDS, RANDOM_STATE, SCORE_WEIGHT_PR_AUC, SCORE_WEIGHT_RECALL, SCORE_WEIGHT_ROC,
@@ -46,7 +47,7 @@ _CALIBRATION_BINS = 10
 # ── Threshold optimisation ────────────────────────────────────────────────────
 
 def threshold_curve(y_true, y_prob) -> pd.DataFrame:
-    """Recall, precision and F1 at every candidate threshold."""
+    """Recall, precision, F1 and the share of customers flagged, at every candidate threshold."""
     y_true = np.asarray(y_true)
     positives = max(int(y_true.sum()), 1)
     rows = []
@@ -57,7 +58,8 @@ def threshold_curve(y_true, y_prob) -> pd.DataFrame:
         recall = tp / positives
         precision = tp / n_flagged if n_flagged else 0.0
         f1 = 2 * precision * recall / (precision + recall) if tp else 0.0
-        rows.append({"threshold": t, "f1": f1, "recall": recall, "precision": precision})
+        rows.append({"threshold": t, "f1": f1, "recall": recall, "precision": precision,
+                     "flagged": n_flagged / max(len(y_true), 1)})
     return pd.DataFrame(rows)
 
 
@@ -159,6 +161,7 @@ def evaluate_holdout(model: CalibratedModel, threshold: float, X_test, y_test) -
         "n_customers": int(len(y_test)),
         "confusion_matrix": confusion_matrix(y_test, y_prob >= threshold),
         "threshold_curve": threshold_curve(y_test, y_prob),
+        "lift_table": lift_table(y_test, y_prob),
     }
 
 

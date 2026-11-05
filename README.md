@@ -25,6 +25,9 @@ Upload your historical customer data, train 5 production-grade ML models, and ge
 - Calibrated probabilities: among customers given 30% risk, about 30% really leave
 - Screening for columns that leak the answer (single-column leaks; a person still has to review the data)
 - Predict new customers with a single CSV upload. Each customer's score depends only on their own row, and files that don't match the training data are stopped
+- Save a trained model and score new customers later without retraining. Files are signed, so only this installation's own files are opened
+- The main reasons behind each flagged customer's risk, in your own columns
+- The money side: enter what a customer is worth, what a contact costs and how many churners it keeps, and get the most profitable threshold, the expected net result, and how many churners the riskiest 10% hold
 
 ## Development
 
@@ -34,6 +37,8 @@ pytest
 ```
 
 `python tools/benchmark.py <data_folder>` trains on one file and scores a separate one, to measure real performance.
+
+Model files are signed with a private key. A private installation creates one in `~/.churn_studio/model_key` on first use, and files saved under one key can only be opened with that key. A hosted app keeps saving turned off until `CHURN_MODEL_KEY` is set in its secrets.
 
 ## Quick Start (Online)
 
