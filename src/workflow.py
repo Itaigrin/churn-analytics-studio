@@ -127,6 +127,7 @@ class TrainingRun:
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     holdout_description: str = ""
+    target_col: str = ""
 
 
 def screen_columns(df: pd.DataFrame, target_col: str, id_col: Optional[str],
@@ -317,6 +318,7 @@ def run_training(
         warnings=warnings,
         notes=notes,
         holdout_description=holdout_description,
+        target_col=target_col,
     )
 
 

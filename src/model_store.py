@@ -56,10 +56,12 @@ class SavedModel:
     n_train: int
     n_holdout: int
     trained_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    target_col: str = ""
 
     @classmethod
     def from_run(cls, run: TrainingRun) -> "SavedModel":
-        return cls(run.artifact, run.best_model_name, run.holdout, run.churn_rate, run.n_train, run.n_holdout)
+        return cls(run.artifact, run.best_model_name, run.holdout, run.churn_rate, run.n_train, run.n_holdout,
+                   target_col=run.target_col)
 
 
 def signing_key() -> bytes | None:
