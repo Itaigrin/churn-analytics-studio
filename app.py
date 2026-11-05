@@ -26,7 +26,9 @@ def _drop_stale_modules():
     anything added since fails. When the src files change, forget the old copies.
     """
     stamp = hashlib.sha256(b"".join(p.read_bytes() for p in sorted(Path(__file__).parent.glob("src/*.py"))))
-    if getattr(sys.modules.get("src"), "_source_stamp", stamp.digest()) != stamp.digest():
+    loaded = sys.modules.get("src")
+    # Modules loaded before this check existed carry no stamp, so they count as stale too
+    if loaded is not None and getattr(loaded, "_source_stamp", None) != stamp.digest():
         for name in [m for m in sys.modules if m == "src" or m.startswith("src.")]:
             del sys.modules[name]
     import src
