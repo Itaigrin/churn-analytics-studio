@@ -86,10 +86,9 @@ PIPELINE_CONFIG = {
     **SEARCH_PRESETS["Thorough"],
 }
 
-# ── Best Overall Score weights ────────────────────────────────────────────────
-SCORE_WEIGHT_PR_AUC = 0.45
-SCORE_WEIGHT_RECALL = 0.35
-SCORE_WEIGHT_ROC    = 0.20
+# ── Reporting ─────────────────────────────────────────────────────────────────
+TOP_SHARE              = 0.10     # "the riskiest 10%": how campaign tools judge a churn list
+INTERVAL_ROUNDS        = 300      # bootstrap rounds for the ranges shown next to each metric
 
 # ── Column-name hints ─────────────────────────────────────────────────────────
 ID_HINTS = [

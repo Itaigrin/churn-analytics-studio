@@ -281,21 +281,38 @@ def _show_results():
     )
 
     _unseen_help = f"Measured on {run.n_holdout:,} customers the model had never seen."
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("🏆 Best Model",      best_name,
-              help="The highest Best Overall Score in the comparison below.")
-    k2.metric("Best Overall Score", f"{holdout['best_overall_score']:.4f}",
-              help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC. " + _unseen_help)
-    k3.metric("PR-AUC",             f"{holdout['pr_auc']:.4f}", help=_unseen_help)
-    k4.metric("Recall",             f"{holdout['recall']:.4f}", help=_unseen_help)
-    k5.metric("ROC-AUC",            f"{holdout['roc_auc']:.4f}", help=_unseen_help)
+    ranges = holdout.get("intervals", {})
 
-    st.caption(
-        f"Probabilities are calibrated: on these customers the average predicted risk was "
-        f"**{holdout['mean_probability']:.1%}** and **{holdout['actual_rate']:.1%}** actually left."
-    )
+    def _range(key, fmt="{:.3f}"):
+        low_high = ranges.get(key)
+        return f" 95% range: {fmt.format(low_high[0])} to {fmt.format(low_high[1])}." if low_high else ""
 
-    st.markdown("#### Model Comparison  *(sorted by Best Overall Score)*")
+    st.markdown(f"#### 🏆 Best model: {best_name}")
+    st.caption("Chosen by the highest PR-AUC in the comparison below.")
+    st.markdown("##### How well does it rank customers?")
+    k2, k3, k4, k5 = st.columns(4)
+    k2.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
+              help="0 is a coin toss and 100 a perfect ranking (2 × ROC-AUC − 1), the same idea as the "
+                   "0–100 quality scores of campaign tools. 60+ is excellent. " + _unseen_help)
+    k3.metric("PR-AUC", f"{holdout['pr_auc']:.4f}",
+              help="How well real leavers are ranked above stayers. The model is chosen by this. "
+                   + _unseen_help + _range("pr_auc"))
+    k4.metric("Top 10% Lift", f"{holdout['lift_top10']:.1f}×",
+              help="The riskiest 10% of customers leave this many times more often than average. "
+                   + _unseen_help + _range("lift_top10", "{:.2f}"))
+    k5.metric("ROC-AUC", f"{holdout['roc_auc']:.4f}", help=_unseen_help + _range("roc_auc"))
+
+    st.markdown("##### How true are its probabilities?")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Predicted vs Actual Churn", f"{holdout['mean_probability']:.1%} vs {holdout['actual_rate']:.1%}",
+              help="Average predicted risk against the share who really left. " + _unseen_help)
+    p2.metric("Calibration Error", f"{holdout['calibration_error']:.3f}",
+              help="Average gap between predicted and real churn rates across risk groups. Below 0.05 is "
+                   "good. The money estimates depend on this.")
+    p3.metric("Log Loss", f"{holdout['log_loss']:.4f}",
+              help="Penalises confident wrong predictions. Lower is better.")
+
+    st.markdown("#### Model Comparison  *(sorted by PR-AUC)*")
     st.caption(
         "All models on one basis: 5-fold predictions on the training customers. This is how the "
         "winner is chosen, so its numbers here differ slightly from the unseen-customer numbers above."
@@ -307,26 +324,20 @@ def _show_results():
         hide_index=True,
         column_config={
             "PR-AUC": st.column_config.TextColumn(
-                "PR-AUC",
-                help="Measures how well the model identifies customers who are likely to churn while keeping false alarms as low as possible. A higher PR-AUC means the model is better at finding real churn customers without incorrectly flagging too many loyal customers. Weight: 45% in Best Overall Score.",
-            ),
-            "Recall": st.column_config.TextColumn(
-                "Recall",
-                help="Measures how many customers who actually churned were correctly identified by the model. A higher Recall means fewer at-risk customers are missed, helping businesses take action before customers leave. Higher is better (range: 0-1). Weight: 35% in Best Overall Score.",
-            ),
+                "PR-AUC", help="How well real leavers are ranked above stayers. The winner has the highest."),
+            "Top 10% Lift": st.column_config.TextColumn(
+                "Top 10% Lift", help="How many times more often the riskiest 10% leave than the average customer."),
+            "Log Loss": st.column_config.TextColumn(
+                "Log Loss", help="How true the probabilities are. Lower is better."),
             "ROC-AUC": st.column_config.TextColumn(
-                "ROC-AUC",
-                help="Measures the model's overall ability to distinguish between customers who will churn and those who will stay. A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds. Weight: 20% in Best Overall Score.",
-            ),
-            "Best Overall Score": st.column_config.TextColumn(
-                "Best Overall Score",
-                help="0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC. The model with the highest score is selected.",
-            ),
+                "ROC-AUC", help="How often a random leaver is ranked above a random stayer. 0.5 is a coin toss."),
         },
     )
 
     # ── Step 11: Professional Model Analysis ─────────────────────────────────
     _show_professional_analysis(best_name, holdout)
+
+    _show_drivers(run.drivers)
 
     _show_lift(holdout, run.n_holdout)
 
@@ -363,6 +374,13 @@ def _explain_recall(rec: float) -> str:
         return (f"**{rec*100:.1f}%** - Out of every 100 customers who actually churned, "
                 f"only {caught} were correctly identified. {missed} left without the model raising a warning. "
                 "Many at-risk customers are being missed.")
+
+
+def _explain_lift(lift: float, churn_rate: float) -> str:
+    top_rate = min(lift * churn_rate, 1.0)
+    return (f"**{lift:.1f}×** - Among the riskiest 10% of customers, about **{top_rate:.0%}** leave, against "
+            f"{churn_rate:.0%} of all customers. A campaign that can only reach a few customers gets "
+            f"{lift:.1f} times more leavers per contact than picking customers at random.")
 
 
 def _explain_pr_auc(pr_auc: float) -> str:
@@ -405,8 +423,13 @@ def _show_professional_analysis(best_name: str, holdout: dict):
 
     st.markdown(f"### 🏆 {best_name}")
     st.markdown(f"**PR-AUC:** {_explain_pr_auc(holdout['pr_auc'])}")
-    st.markdown(f"**Recall:** {_explain_recall(holdout['recall'])}")
+    st.markdown(f"**Top 10% Lift:** {_explain_lift(holdout['lift_top10'], holdout['actual_rate'])}")
     st.markdown(f"**ROC-AUC:** {_explain_roc(holdout['roc_auc'])}")
+    st.markdown(
+        f"**At the recommended threshold:** {_explain_recall(holdout['recall'])} Of the customers it "
+        f"flags, **{holdout['precision']:.0%}** really leave. The threshold can be changed below, so these two "
+        "numbers describe a choice, not the model itself."
+    )
 
 
 def _show_guide():
@@ -432,7 +455,7 @@ def _show_guide():
             "How well the model finds churners without flooding you with false alarms.",
             "Measures how well the model identifies customers who are likely to churn while keeping false alarms as low as possible. "
             "A higher PR-AUC means the model is better at finding real churn customers without incorrectly flagging too many loyal customers. "
-            "**This is the most important metric in this app - it carries 45% of the Best Overall Score.**",
+            "**This is the metric the app uses to choose the best model.**",
             "📈",
         ),
         (
@@ -441,7 +464,7 @@ def _show_guide():
             "Measures how many customers who actually churned were correctly identified by the model. "
             "A higher Recall means fewer at-risk customers are missed, helping businesses take action before customers leave. "
             "If 100 customers were going to churn and the model caught 80, Recall = 80%. "
-            "**Higher is better (range: 0-1). Carries 35% of the Best Overall Score.**",
+            "**It depends on the threshold you choose, so it is shown next to the threshold, not used to choose the model.**",
             "🔍",
         ),
         (
@@ -449,16 +472,24 @@ def _show_guide():
             "The model's overall ability to tell churners from loyal customers.",
             "Measures the model's overall ability to distinguish between customers who will churn and those who will stay. "
             "A higher ROC-AUC means the model is better at ranking high-risk customers ahead of low-risk customers across all decision thresholds. "
-            "**1.0 = perfect. 0.5 = random guessing. Carries 20% of the Best Overall Score.**",
+            "**1.0 = perfect. 0.5 = random guessing.** The Prediction Quality score is 2 × ROC-AUC − 1, on a 0–100 scale.",
             "🎯",
         ),
         (
-            "Best Overall Score",
-            "The single score used to decide which model wins.",
-            "A weighted combination of the three metrics above:\n\n"
-            "> `Best Overall Score = 45% × PR-AUC + 35% × Recall + 20% × ROC-AUC`\n\n"
-            "The model with the highest Best Overall Score is automatically selected as the winner.",
-            "🏆",
+            "Top 10% Lift",
+            "How much better than random the riskiest customers are.",
+            "Sort customers by risk and take the top 10%. Lift is how many times more often they leave than the "
+            "average customer. Campaign tools such as Braze and Pecan judge churn models this way, because a "
+            "retention team can usually reach only part of the customer base.",
+            "🎯",
+        ),
+        (
+            "Calibration and Log Loss",
+            "Whether a 30% risk really means 30 out of 100 leave.",
+            "Calibration error compares predicted and real churn rates across risk groups. Log loss penalises "
+            "confident wrong predictions. Both matter because the money estimates multiply probabilities by "
+            "customer value.",
+            "⚖️",
         ),
     ]
 
@@ -525,19 +556,15 @@ def _show_guide():
     st.markdown("## 🏆 How Does the App Pick the Best Model?")
     st.markdown(
         "Every model is scored on customers it did not see while being fitted, using 5-fold predictions on the "
-        "training customers. The app then calculates a **Best Overall Score** for each model:\n\n"
-        "> `Best Overall Score = 45% × PR-AUC + 35% × Recall + 20% × ROC-AUC`\n\n"
-        "**Why these weights?**\n\n"
-        "- **PR-AUC (45%)** - The most important metric. It rewards models that catch churners accurately "
-        "without flooding you with false alarms. A high Recall achieved by flagging everyone as a churner "
-        "will score poorly here.\n\n"
-        "- **Recall (35%)** - Missing a churner is costly. This ensures models that catch more at-risk "
-        "customers are rewarded.\n\n"
-        "- **ROC-AUC (20%)** - Measures the overall quality of the model's rankings across all thresholds. "
-        "Used as a stability check.\n\n"
-        "The model with the **highest Best Overall Score** is automatically selected as the winner. "
-        "The results you see at the top are then measured on a separate group of customers, held back "
-        "until the winner has been chosen."
+        "training customers. The model with the **highest PR-AUC** wins: the best at ranking real leavers "
+        "above stayers.\n\n"
+        "The results are then reported as three separate questions, each with its own measure:\n\n"
+        "- **Ranking:** PR-AUC, Top 10% Lift and ROC-AUC.\n"
+        "- **Probabilities:** calibration error and log loss.\n"
+        "- **Decision:** recall and precision, which depend on the threshold you choose.\n\n"
+        "On public churn datasets, choosing by PR-AUC found the model that was best on new customers more "
+        "often than a weighted mix of metrics. The results at the top are measured on a separate group of "
+        "customers, held back until the winner has been chosen."
     )
 
 
@@ -711,6 +738,36 @@ def _outcomes_section(model, prefix: str = ""):
         )
 
 
+def _show_drivers(drivers):
+    """What moves churn risk across all customers, measured on customers the model did not train on."""
+    if drivers is None or len(drivers) == 0:
+        return
+    _sec("🧭", "What Drives Churn")
+    top = drivers.iloc[0]
+    st.markdown(
+        f"The column that moves churn risk the most is **{top['Column']}**: on average it shifts a customer's "
+        f"risk by **{top['Average Effect']:.1f} percentage points**. The table lists every column the model "
+        "uses, strongest first, with the values that raise risk."
+    )
+    st.dataframe(
+        drivers.head(15),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Average Effect": st.column_config.ProgressColumn(
+                "Average Effect (pts)", format="%.1f", min_value=0.0,
+                max_value=float(max(drivers["Average Effect"].max(), 0.1)),
+                help="How much this column moves a customer's churn risk on average, in percentage points, "
+                     "compared with the range of values other customers have."),
+            "Raises Risk": st.column_config.TextColumn(
+                "Raises Risk", help="For numbers, whether higher or lower values raise risk. "
+                                    "For categories, the value that raises it most."),
+        },
+    )
+    st.caption("This describes what the model learned, not cause and effect: a column can stand in for "
+               "something else that really drives churn.")
+
+
 def _show_lift(holdout: dict, n_holdout: int):
     """How much of the churn a campaign reaches when it can only contact the riskiest few."""
     _sec("🎯", "Who To Contact First")
@@ -731,9 +788,10 @@ def _show_lift(holdout: dict, n_holdout: int):
     st.dataframe(table, width="stretch", hide_index=True)
 
 
-def _economics_inputs(prefix: str):
-    """The three business numbers that turn probabilities into money."""
+def _economics_inputs(prefix: str, df_new: pd.DataFrame | None = None):
+    """The business numbers that turn probabilities into money, and optionally each customer's value."""
     from src.business import Economics
+    from src.pipeline_builder import detect_decimal, is_text_column, parse_numeric_column
 
     with st.expander("💰 Campaign economics — set these to see the money", expanded=False):
         st.caption("Use your own currency. Rough numbers are fine; the result shows how much they matter.")
@@ -751,7 +809,23 @@ def _economics_inputs(prefix: str):
             key=f"{prefix}econ_success",
             help="Of the customers who would have left and were contacted, the share who stay. "
                  "Measure it with a test campaign if you can.")
-    return Economics(value, cost, success)
+
+        values = None
+        if df_new is not None:
+            numeric = {}
+            for col in df_new.columns:
+                raw = df_new[col]
+                parsed = parse_numeric_column(raw, detect_decimal(raw) if is_text_column(raw) else ".")
+                if parsed.notna().mean() >= 0.9 and parsed.nunique() > 2:
+                    numeric[col] = parsed
+            choice = st.selectbox(
+                "Column with each customer's value (optional)", ["(same value for everyone)"] + list(numeric),
+                key=f"{prefix}econ_value_col",
+                help="For example yearly revenue or margin per customer. Risk is then weighed in money, "
+                     "so a valuable customer at 30% risk can come before a small one at 50%.")
+            if choice in numeric:
+                values = numeric[choice].to_numpy()
+    return Economics(value, cost, success), values
 
 
 _SAVING_OFF = (
@@ -821,14 +895,22 @@ def _saved_model_tab():
 
     holdout = saved.holdout
     st.success(f"✅ Loaded **{saved.model_name}**, trained {saved.trained_at[:10]} on {saved.n_train:,} customers")
+    _then = f"Measured on {saved.n_holdout:,} unseen customers when it was trained."
     k1, k2, k3 = st.columns(3)
-    k1.metric("PR-AUC", f"{holdout['pr_auc']:.4f}", help=f"Measured on {saved.n_holdout:,} unseen customers when it was trained.")
-    k2.metric("Recall", f"{holdout['recall']:.4f}", help=f"Measured on {saved.n_holdout:,} unseen customers when it was trained.")
-    k3.metric("ROC-AUC", f"{holdout['roc_auc']:.4f}", help=f"Measured on {saved.n_holdout:,} unseen customers when it was trained.")
+    if "quality_score" in holdout:
+        k1.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100", help=_then)
+    else:
+        k1.metric("ROC-AUC", f"{holdout['roc_auc']:.4f}", help=_then)
+    k2.metric("PR-AUC", f"{holdout['pr_auc']:.4f}", help=_then)
+    if "lift_top10" in holdout:
+        k3.metric("Top 10% Lift", f"{holdout['lift_top10']:.1f}×", help=_then)
+    else:
+        k3.metric("Recall", f"{holdout['recall']:.4f}", help=_then)
     st.caption(
         "These numbers are from when the model was trained. Customers change over time, "
         "so retrain regularly on recent history."
     )
+    _show_drivers(getattr(saved, "drivers", None))
     st.divider()
     _sec("🔮", "Predict New Customers")
     _predict_section(saved, prefix="saved_")
@@ -917,81 +999,96 @@ def _predict_section(model, prefix: str = ""):
     for _note in report.warnings():
         st.warning(_note)
 
-    # ── Threshold selector ────────────────────────────────────────────────────
-    from src.business import campaign_estimate, contact_everyone, file_estimate
+    # ── Who gets flagged ──────────────────────────────────────────────────────
+    from src.business import campaign_estimate, contact_everyone, file_estimate, risk_levels
 
     thr_curve = model.holdout["threshold_curve"]
-    economics = _economics_inputs(prefix)
+    economics, values = _economics_inputs(prefix, df_new)
     goal = st.radio(
         "Choose who gets flagged by",
-        ["Best balance (F1)", "Most profit (your numbers above)"],
+        ["Best balance (F1)", "Most profit (your numbers above)", "How many customers I can contact"],
         horizontal=True, key=f"{prefix}threshold_goal",
     )
     by_profit = goal.startswith("Most profit")
+    by_capacity = goal.startswith("How many")
+    per_customer_value = by_profit and values is not None
     breakeven = economics.breakeven
-    if by_profit:
-        auto_thr = float(np.clip(round(breakeven, 2), 0.02, 0.90))
-    else:
-        auto_thr = round(float(artifact.threshold), 2)
+    capacity = None
+    selected_thr = None
 
-    st.markdown("#### Sensitivity Setting")
-    sl_col, hint_col = st.columns([3, 2])
-    with sl_col:
-        selected_thr = st.slider(
-            "Decision Threshold",
-            min_value=0.02, max_value=0.90,
-            value=auto_thr, step=0.01,
-            key=f"{prefix}threshold_slider_{goal}",
-            help=(
-                "A customer is flagged when their churn probability reaches this value.\n\n"
-                "Lower → more customers flagged (higher Recall, more false alarms).\n\n"
-                "Higher → fewer customers flagged (fewer false alarms, may miss some churners)."
-            ),
-        )
-        row = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
+    if by_capacity:
+        capacity = int(st.number_input(
+            "Customers you can contact", min_value=1, max_value=len(df_new),
+            value=min(100, len(df_new)), step=10, key=f"{prefix}capacity",
+            help="The riskiest customers in this file are flagged, up to this number."))
+        st.caption(f"The **{capacity:,} riskiest** customers in this file will be flagged.")
+    elif per_customer_value:
         st.caption(
-            f"At threshold **{selected_thr:.2f}** — measured on customers the model had not seen: "
-            f"Recall **{float(row['recall'].values[0]):.0%}** · "
-            f"Precision **{float(row['precision'].values[0]):.0%}**"
+            "Each customer is flagged when contacting them is expected to pay off: churn probability × share "
+            "kept × that customer's value is more than the cost of the contact. Valuable customers are "
+            "contacted at lower risk than small ones."
         )
+    else:
+        auto_thr = (float(np.clip(round(breakeven, 2), 0.02, 0.90)) if by_profit
+                    else round(float(artifact.threshold), 2))
+        st.markdown("#### Sensitivity Setting")
+        sl_col, hint_col = st.columns([3, 2])
+        with sl_col:
+            selected_thr = st.slider(
+                "Decision Threshold",
+                min_value=0.02, max_value=0.90,
+                value=auto_thr, step=0.01,
+                key=f"{prefix}threshold_slider_{goal}",
+                help=(
+                    "A customer is flagged when their churn probability reaches this value.\n\n"
+                    "Lower → more customers flagged (higher Recall, more false alarms).\n\n"
+                    "Higher → fewer customers flagged (fewer false alarms, may miss some churners)."
+                ),
+            )
+            row = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
+            st.caption(
+                f"At threshold **{selected_thr:.2f}** — measured on customers the model had not seen: "
+                f"Recall **{float(row['recall'].values[0]):.0%}** · "
+                f"Precision **{float(row['precision'].values[0]):.0%}**"
+            )
 
-        with st.expander(f"Why {auto_thr:.2f}?"):
-            if by_profit:
-                clipped = "" if 0.02 <= breakeven <= 0.90 else (
-                    f" The exact value, {breakeven:.3f}, is outside the 0.02–0.90 range, so the nearest end is used.")
-                st.markdown(
-                    f"A contact pays for itself when the customer's churn probability is above "
-                    f"cost ÷ (share kept × value) = {economics.cost:,.0f} ÷ ({economics.success:.0%} × "
-                    f"{economics.value:,.0f}) = **{breakeven:.3f}**. Below that, the expected saving is smaller "
-                    f"than the cost of the contact. This works because the probabilities are calibrated."
-                    + clipped
-                )
+            with st.expander(f"Why {auto_thr:.2f}?"):
+                if by_profit:
+                    clipped = "" if 0.02 <= breakeven <= 0.90 else (
+                        f" The exact value, {breakeven:.3f}, is outside the 0.02–0.90 range, so the nearest end is used.")
+                    st.markdown(
+                        f"A contact pays for itself when the customer's churn probability is above "
+                        f"cost ÷ (share kept × value) = {economics.cost:,.0f} ÷ ({economics.success:.0%} × "
+                        f"{economics.value:,.0f}) = **{breakeven:.3f}**. Below that, the expected saving is smaller "
+                        f"than the cost of the contact. This works because the probabilities are calibrated."
+                        + clipped
+                    )
+                else:
+                    st.markdown(
+                        f"**{auto_thr:.2f}** gave the highest **F1 score**, the balance between catching "
+                        f"churners (Recall) and avoiding false alarms (Precision). Every threshold from 0.02 "
+                        f"to 0.90 was tested on calibrated predictions for customers each fold had not seen."
+                    )
+
+        with hint_col:
+            if abs(selected_thr - auto_thr) <= 0.02:
+                st.info("💰 **Recommended setting** — the most profitable cut for your numbers." if by_profit else
+                        "⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
+            elif selected_thr < auto_thr:
+                st.info("🔍 **More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
             else:
-                st.markdown(
-                    f"**{auto_thr:.2f}** gave the highest **F1 score**, the balance between catching "
-                    f"churners (Recall) and avoiding false alarms (Precision). Every threshold from 0.02 "
-                    f"to 0.90 was tested on calibrated predictions for customers each fold had not seen."
-                )
+                st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
 
-    with hint_col:
-        if abs(selected_thr - auto_thr) <= 0.02:
-            st.info("💰 **Recommended setting** — the most profitable cut for your numbers." if by_profit else
-                    "⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
-        elif selected_thr < auto_thr:
-            st.info("🔍 **More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
-        else:
-            st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
-
-    estimate = campaign_estimate(thr_curve, model.holdout["actual_rate"], economics)
-    at_threshold = estimate.iloc[(estimate["threshold"] - selected_thr).abs().argsort()[:1]].iloc[0]
-    everyone = contact_everyone(model.holdout["actual_rate"], economics)
-    st.markdown(
-        f"**At this threshold, per 1,000 customers like the unseen ones:** contact "
-        f"**{at_threshold['contacted']:,.0f}**, reach **{at_threshold['churners_reached']:,.0f}** of the "
-        f"{model.holdout['actual_rate'] * 1000:,.0f} who would leave, keep about "
-        f"**{at_threshold['customers_saved']:,.0f}**. Net result **{at_threshold['net']:,.0f}**, against "
-        f"{everyone:,.0f} for contacting everyone and 0 for doing nothing."
-    )
+        estimate = campaign_estimate(thr_curve, model.holdout["actual_rate"], economics)
+        at_threshold = estimate.iloc[(estimate["threshold"] - selected_thr).abs().argsort()[:1]].iloc[0]
+        everyone = contact_everyone(model.holdout["actual_rate"], economics)
+        st.markdown(
+            f"**At this threshold, per 1,000 customers like the unseen ones:** contact "
+            f"**{at_threshold['contacted']:,.0f}**, reach **{at_threshold['churners_reached']:,.0f}** of the "
+            f"{model.holdout['actual_rate'] * 1000:,.0f} who would leave, keep about "
+            f"**{at_threshold['customers_saved']:,.0f}**. Net result **{at_threshold['net']:,.0f}**, against "
+            f"{everyone:,.0f} for contacting everyone and 0 for doing nothing."
+        )
 
     # ── Predict button ────────────────────────────────────────────────────────
     if st.button("🔮 Predict Churn", type="primary", key=f"{prefix}predict_btn", disabled=not allow_missing):
@@ -1010,31 +1107,46 @@ def _predict_section(model, prefix: str = ""):
                     st.code(traceback.format_exc())
                 return
 
-    # ── Results (apply current threshold to stored probabilities) ─────────────
+    # ── Results (apply the current choice to stored probabilities) ────────────
     raw_probs = state.get(probs_name)
     if raw_probs is None:
         return
 
-    flagged_mask = raw_probs >= selected_thr
-    total        = len(raw_probs)
-    n_flagged    = int(flagged_mask.sum())
+    gains = economics.gain(raw_probs, values)
+    if by_capacity:
+        flagged_mask = np.zeros(len(raw_probs), dtype=bool)
+        flagged_mask[np.argsort(-raw_probs, kind="stable")[:capacity]] = True
+    elif per_customer_value:
+        flagged_mask = gains > 0
+    else:
+        flagged_mask = raw_probs >= selected_thr
+    total     = len(raw_probs)
+    n_flagged = int(flagged_mask.sum())
+    levels    = risk_levels(raw_probs, flagged_mask, model.churn_rate)
 
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Customers",  f"{total:,}")
-    m2.metric("Flagged At Risk",  f"{n_flagged:,}")
-    m3.metric("Not Flagged",      f"{total - n_flagged:,}")
-    m4.metric("% Flagged",        f"{n_flagged / max(total, 1):.1%}")
+    m2.metric("Flagged At Risk",  f"{n_flagged:,}", help="High risk: the customers to contact.")
+    m3.metric("Medium Risk",      f"{int((levels == 'Medium').sum()):,}",
+              help="Riskier than the average customer, but not flagged. Worth watching.")
+    m4.metric("Low Risk",         f"{int((levels == 'Low').sum()):,}",
+              help="No riskier than the average customer.")
 
-    campaign = file_estimate(raw_probs, selected_thr, economics)
-    b1, b2, b3 = st.columns(3)
+    campaign = file_estimate(raw_probs, flagged_mask, economics, values)
+    b1, b2, b3, b4 = st.columns(4)
     b1.metric("Expected Churners Among Flagged", f"{campaign['expected_churners_reached']:,.0f}",
               help="The sum of the flagged customers' churn probabilities.")
-    b2.metric("Expected Customers Kept", f"{campaign['expected_saved']:,.0f}",
+    b2.metric("Share Of Expected Churners Reached", f"{campaign['share_of_expected_churners']:.0%}",
+              help="Of all the customers in this file expected to leave, the share among the flagged ones.")
+    b3.metric("Expected Customers Kept", f"{campaign['expected_saved']:,.0f}",
               help="Expected churners among the flagged, times the share a contact keeps.")
-    b3.metric("Expected Net Result", f"{campaign['net']:,.0f}",
+    b4.metric("Expected Net Result", f"{campaign['net']:,.0f}",
               help="Value of the customers kept minus the cost of contacting every flagged customer. "
                    "Uses your numbers in Campaign economics.")
+    if values is not None:
+        st.metric("Value At Risk In This File", f"{float(np.nansum(raw_probs * np.nan_to_num(values))):,.0f}",
+                  help="Each customer's value times their churn probability, added up: the value expected to leave.")
 
     # ── Risk compared with history ────────────────────────────────────────────
     expected = float(raw_probs.mean())
@@ -1071,9 +1183,13 @@ def _predict_section(model, prefix: str = ""):
     st.divider()
 
     display_df = df_new.copy()
+    display_df["Risk Score"]        = np.round(raw_probs * 100).astype(int)
+    display_df["Risk Level"]        = levels
     display_df["Flagged At Risk"]   = np.where(flagged_mask, "Yes", "No")
     display_df["Churn Probability"] = np.round(raw_probs, 4)
-    display_df["Expected Gain From Contact"] = np.round(economics.gain(raw_probs), 2)
+    if values is not None:
+        display_df["Value At Risk"] = np.round(raw_probs * np.nan_to_num(values), 2)
+    display_df["Expected Gain From Contact"] = np.round(gains, 2)
     for i in range(TOP_REASONS):
         display_df[f"Reason {i + 1}"] = [
             format_reason(reasons[i]) if flagged and i < len(reasons) else ""
@@ -1081,9 +1197,11 @@ def _predict_section(model, prefix: str = ""):
         ]
 
     st.caption(
-        "Reasons are shown for flagged customers. **+18 pts** means this value adds about 18 percentage "
-        "points of risk, compared with the range of values other customers have. Each column is "
-        "checked on its own, so the points don't add up to the total risk."
+        "Risk Score is the churn probability on a 0–100 scale. Risk Level: **High** is flagged, **Medium** is "
+        "riskier than the average customer but not flagged, **Low** is the rest. Reasons are shown for flagged "
+        "customers: **+18 pts** means this value adds about 18 percentage points of risk, compared with the "
+        "range of values other customers have. Each column is checked on its own, so the points don't add up "
+        "to the total risk."
         + (f" Only the {MAX_CUSTOMERS:,} riskiest customers are explained." if total > MAX_CUSTOMERS else "")
     )
     st.dataframe(display_df, width="stretch", hide_index=True)
@@ -1392,6 +1510,6 @@ with _tab_pipeline:
     st.divider()
     st.caption(
         "Churn Analytics Studio  ·  Built with Streamlit & scikit-learn  ·  "
-        "Best model selected by PR-AUC · Recall · ROC-AUC  ·  "
+        "Best model selected by PR-AUC  ·  "
         "Models: Logistic Regression, Random Forest, XGBoost, LightGBM, CatBoost"
     )

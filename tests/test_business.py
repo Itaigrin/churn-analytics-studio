@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.business import Economics, campaign_estimate, contact_everyone, file_estimate, lift_table
+from src.business import Economics, campaign_estimate, contact_everyone, file_estimate, lift_table, risk_levels
 from src.evaluator import threshold_curve
 
 
@@ -33,10 +33,25 @@ def test_contacting_everyone_is_the_baseline():
 def test_the_file_estimate_adds_up_each_customer():
     economics = Economics(1000, 50, 0.25)
     p = np.array([0.9, 0.5, 0.1])
-    estimate = file_estimate(p, 0.3, economics)
+    estimate = file_estimate(p, p >= 0.3, economics)
     assert estimate["contacted"] == 2
     assert estimate["expected_churners_reached"] == pytest.approx(1.4)
+    assert estimate["share_of_expected_churners"] == pytest.approx(1.4 / 1.5)
     assert estimate["net"] == pytest.approx(1.4 * 0.25 * 1000 - 2 * 50)
+
+
+def test_each_customer_can_have_their_own_value():
+    economics = Economics(1000, 50, 0.25)
+    p = np.array([0.3, 0.3])
+    gains = economics.gain(p, values=[5000, 100])
+    # Same risk, but only the valuable customer is worth a contact
+    assert gains[0] > 0 > gains[1]
+    assert file_estimate(p, gains > 0, economics, values=[5000, 100])["net"] == pytest.approx(gains[0])
+
+
+def test_risk_levels_follow_the_flag_and_the_average_customer():
+    p = np.array([0.8, 0.3, 0.1])
+    assert risk_levels(p, p >= 0.5, churn_rate=0.2).tolist() == ["High", "Medium", "Low"]
 
 
 def test_with_calibrated_probabilities_the_breakeven_is_the_most_profitable_cut():

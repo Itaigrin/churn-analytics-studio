@@ -33,7 +33,9 @@ from .config import (
 )
 from .errors import DataValidationError
 from .evaluator import evaluate_all, evaluate_holdout, pick_best_model
-from .explain import MAX_CUSTOMERS, ColumnReference, Reason, build_reference, column_effects, top_reasons
+from .explain import (
+    MAX_CUSTOMERS, ColumnReference, Reason, build_reference, column_effects, overall_drivers, top_reasons,
+)
 from .feature_engineering import FeatureSpec, apply_features, fit_feature_spec
 from .leakage import LeakFinding, scan_for_leakage
 from .monitoring import DriftReference, DriftReport, build_drift_reference, drift_report
@@ -128,6 +130,7 @@ class TrainingRun:
     notes: list[str] = field(default_factory=list)
     holdout_description: str = ""
     target_col: str = ""
+    drivers: Optional[pd.DataFrame] = None
 
 
 def screen_columns(df: pd.DataFrame, target_col: str, id_col: Optional[str],
@@ -288,6 +291,9 @@ def run_training(
             "before the customer leaves."
         )
 
+    report(94, "Working out what drives churn…")
+    drivers = _overall_drivers(trained, X_test, X_train, spec, list(X_train_f.columns), schema)
+
     report(96, "Refitting the winner on all customers…")
     X_all = apply_features(X, spec)
     final_pipeline = clone(best["model"]).fit(X_all, y)
@@ -319,7 +325,22 @@ def run_training(
         notes=notes,
         holdout_description=holdout_description,
         target_col=target_col,
+        drivers=drivers,
     )
+
+
+_DRIVER_SAMPLE = 1_000
+
+
+def _overall_drivers(model: CalibratedModel, X_test: pd.DataFrame, X_train: pd.DataFrame,
+                     spec: FeatureSpec, model_columns: list[str], schema: DataSchema) -> pd.DataFrame:
+    """Measured on customers the model did not train on, like every other result."""
+    sample = X_test.sample(min(_DRIVER_SAMPLE, len(X_test)), random_state=RANDOM_STATE)
+    predict = lambda features: model.predict_proba(features)[:, 1]
+    probabilities = predict(apply_features(sample, spec)[model_columns])
+    reference = build_reference(X_train, schema.of_kind("numeric"))
+    effects = column_effects(sample, reference, spec, model_columns, predict, probabilities)
+    return overall_drivers(effects, sample, schema.of_kind("numeric"), schema.of_kind("boolean"))
 
 
 def _std(col: Optional[str]) -> Optional[str]:

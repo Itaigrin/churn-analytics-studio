@@ -10,9 +10,14 @@ Two separate data sets answer two separate questions:
   The holdout reports. It is touched once, by the winner, with the threshold
   already fixed, so the numbers shown are not influenced by any of those choices.
 
-Best Overall Score = 0.45 * PR-AUC + 0.35 * Recall + 0.20 * ROC-AUC
-Recall is measured at each model's own threshold on calibrated probabilities.
-At a fixed 0.5 it would mostly reward whichever model has the most inflated scores.
+The winner is the model with the highest PR-AUC. Three questions are reported
+separately, because each needs its own measure:
+  ranking      PR-AUC, ROC-AUC and the lift in the riskiest 10%
+  probability  log loss, Brier score and calibration error
+  decision     recall and precision, which only exist at a chosen threshold
+A blend of them would mix a model's quality with a decision about how many to contact.
+On the public datasets, choosing by PR-AUC found the best model on unseen customers
+more often than the weighted score it replaced.
 """
 
 from __future__ import annotations
@@ -26,13 +31,14 @@ from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
     confusion_matrix,
+    log_loss,
     roc_auc_score,
 )
 from sklearn.model_selection import cross_val_predict
 
 from .business import lift_table
 from .calibration import CalibratedModel, PlattCalibrator
-from .config import OOF_FOLDS, SCORE_WEIGHT_PR_AUC, SCORE_WEIGHT_RECALL, SCORE_WEIGHT_ROC
+from .config import INTERVAL_ROUNDS, OOF_FOLDS, RANDOM_STATE, TOP_SHARE
 from .errors import ChurnAppError
 from .trainer import make_folds
 
@@ -67,12 +73,6 @@ def optimize_threshold(y_true, y_prob) -> float:
     return float(curve.loc[curve["f1"].idxmax(), "threshold"])
 
 
-def overall_score(pr_auc: float, recall: float, roc_auc: float) -> float:
-    return (SCORE_WEIGHT_PR_AUC * pr_auc
-            + SCORE_WEIGHT_RECALL * recall
-            + SCORE_WEIGHT_ROC * roc_auc)
-
-
 def metrics_at(y_true, y_prob, threshold: float) -> dict:
     y_true = np.asarray(y_true)
     flagged = y_prob >= threshold
@@ -80,16 +80,68 @@ def metrics_at(y_true, y_prob, threshold: float) -> dict:
     recall = tp / max(int(y_true.sum()), 1)
     precision = tp / max(int(flagged.sum()), 1)
     f1 = 2 * precision * recall / (precision + recall) if tp else 0.0
-    pr_auc = float(average_precision_score(y_true, y_prob))
-    roc_auc = float(roc_auc_score(y_true, y_prob))
     return {
-        "pr_auc": pr_auc,
-        "roc_auc": roc_auc,
+        "pr_auc": float(average_precision_score(y_true, y_prob)),
+        "roc_auc": float(roc_auc_score(y_true, y_prob)),
         "recall": recall,
         "precision": precision,
         "f1": f1,
-        "best_overall_score": overall_score(pr_auc, recall, roc_auc),
     }
+
+
+def lift_at_top(y_true, y_prob, share: float = TOP_SHARE) -> float:
+    """Churn rate among the riskiest share of customers, divided by the overall churn rate."""
+    y_true = np.asarray(y_true)
+    top = np.argsort(-np.asarray(y_prob), kind="stable")[: max(1, int(round(len(y_true) * share)))]
+    return float(y_true[top].mean() / max(y_true.mean(), 1e-12))
+
+
+def model_quality(y_true, y_prob) -> dict:
+    """How well a model ranks customers and how true its probabilities are, at no threshold."""
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+    clipped = np.clip(y_prob, 1e-6, 1 - 1e-6)
+    return {
+        "pr_auc": float(average_precision_score(y_true, y_prob)),
+        "roc_auc": float(roc_auc_score(y_true, y_prob)),
+        "lift_top10": lift_at_top(y_true, y_prob),
+        "log_loss": float(log_loss(y_true, clipped, labels=[0, 1])),
+        "brier": float(brier_score_loss(y_true, y_prob)),
+        "calibration_error": calibration_error(y_true, y_prob),
+    }
+
+
+def quality_score(roc_auc: float) -> float:
+    """
+    0 for a coin toss, 100 for a perfect ranking: the accuracy ratio, 2 × ROC-AUC − 1.
+    It is the same idea as the 0–100 quality scores of campaign tools: lift over random.
+    """
+    return float(np.clip(200 * roc_auc - 100, 0, 100))
+
+
+def quality_grade(score: float) -> str:
+    if score >= 60:
+        return "Excellent"
+    if score >= 40:
+        return "Good"
+    if score >= 20:
+        return "Fair"
+    return "Weak"
+
+
+def metric_intervals(y_true, y_prob) -> dict:
+    """95% ranges for the headline metrics, by resampling the customers."""
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+    rng = np.random.default_rng(RANDOM_STATE)
+    draws = {"pr_auc": [], "roc_auc": [], "lift_top10": []}
+    for _ in range(INTERVAL_ROUNDS):
+        i = rng.integers(0, len(y_true), len(y_true))
+        if 0 < y_true[i].sum() < len(i):
+            draws["pr_auc"].append(average_precision_score(y_true[i], y_prob[i]))
+            draws["roc_auc"].append(roc_auc_score(y_true[i], y_prob[i]))
+            draws["lift_top10"].append(lift_at_top(y_true[i], y_prob[i]))
+    return {k: (float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5))) for k, v in draws.items() if v}
 
 
 # ── Choosing: out-of-fold on the training rows ────────────────────────────────
@@ -106,7 +158,7 @@ def evaluate_candidate(pipeline, X, y, groups=None) -> dict:
     calibrated = calibrator.transform(scores)
     threshold = optimize_threshold(y, calibrated)
     return {"calibrator": calibrator, "threshold": threshold,
-            **metrics_at(y, calibrated, threshold)}
+            **metrics_at(y, calibrated, threshold), **model_quality(y, calibrated)}
 
 
 def evaluate_all(results: dict, X_train, y_train, progress_callback=None, groups=None) -> dict:
@@ -125,14 +177,14 @@ def evaluate_all(results: dict, X_train, y_train, progress_callback=None, groups
 
 
 def pick_best_model(results: dict) -> str:
-    """The model with the highest Best Overall Score on out-of-fold predictions."""
+    """The model with the highest PR-AUC on out-of-fold predictions."""
     valid = {name: r for name, r in results.items()
-             if r.get("model") is not None and "best_overall_score" in r}
+             if r.get("model") is not None and "pr_auc" in r}
     if not valid:
         details = "; ".join(f"{name}: {r.get('error', 'unknown error')[:200]}"
                             for name, r in results.items())
         raise ChurnAppError(f"No model could be trained on this data. {details}")
-    return max(valid, key=lambda name: valid[name]["best_overall_score"])
+    return max(valid, key=lambda name: valid[name]["pr_auc"])
 
 
 # ── Reporting: the untouched holdout ──────────────────────────────────────────
@@ -151,10 +203,14 @@ def calibration_error(y_true, y_prob) -> float:
 
 def evaluate_holdout(model: CalibratedModel, threshold: float, X_test, y_test) -> dict:
     y_prob = model.predict_proba(X_test)[:, 1]
+    quality = model_quality(y_test, y_prob)
+    score = quality_score(quality["roc_auc"])
     return {
         **metrics_at(y_test, y_prob, threshold),
-        "brier": float(brier_score_loss(y_test, y_prob)),
-        "calibration_error": calibration_error(y_test, y_prob),
+        **quality,
+        "quality_score": score,
+        "quality_grade": quality_grade(score),
+        "intervals": metric_intervals(y_test, y_prob),
         "mean_probability": float(y_prob.mean()),
         "actual_rate": float(np.mean(y_test)),
         "n_customers": int(len(y_test)),
@@ -167,24 +223,24 @@ def evaluate_holdout(model: CalibratedModel, threshold: float, X_test, y_test) -
 # ── Comparison table ──────────────────────────────────────────────────────────
 
 def build_comparison_table(results: dict) -> pd.DataFrame:
-    """All models on one basis (out-of-fold), best first. Failed models go last."""
+    """All models on one basis (out-of-fold), highest PR-AUC first. Failed models go last."""
     rows = []
     for name, r in results.items():
-        if r.get("error") or "best_overall_score" not in r:
+        if r.get("error") or "pr_auc" not in r:
             rows.append({
                 "Model": name, "Status": f"❌ {str(r.get('error', 'not evaluated'))[:50]}",
-                "PR-AUC": "—", "Recall": "—", "ROC-AUC": "—", "Best Overall Score": "—",
+                "PR-AUC": "—", "Top 10% Lift": "—", "Log Loss": "—", "ROC-AUC": "—",
             })
             continue
         rows.append({
-            "Model":              name,
-            "Status":             "✅",
-            "PR-AUC":             f"{r['pr_auc']:.4f}",
-            "Recall":             f"{r['recall']:.4f}",
-            "ROC-AUC":            f"{r['roc_auc']:.4f}",
-            "Best Overall Score": f"{r['best_overall_score']:.4f}",
+            "Model":        name,
+            "Status":       "✅",
+            "PR-AUC":       f"{r['pr_auc']:.4f}",
+            "Top 10% Lift": f"{r['lift_top10']:.2f}×",
+            "Log Loss":     f"{r['log_loss']:.4f}",
+            "ROC-AUC":      f"{r['roc_auc']:.4f}",
         })
 
     table = pd.DataFrame(rows)
-    order = pd.to_numeric(table["Best Overall Score"], errors="coerce")
+    order = pd.to_numeric(table["PR-AUC"], errors="coerce")
     return table.loc[order.sort_values(ascending=False, na_position="last").index].reset_index(drop=True)

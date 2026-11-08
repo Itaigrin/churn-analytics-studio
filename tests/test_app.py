@@ -197,6 +197,52 @@ def test_past_predictions_are_checked_against_what_happened(trained_app):
     assert any("holding up" in s.value for s in trained_app.success)
 
 
+def test_results_show_quality_lift_and_drivers(trained_app):
+    labels = {m.label for m in trained_app.metric}
+    assert {"PR-AUC", "Top 10% Lift", "Calibration Error"} <= labels
+    assert any(label.startswith("Prediction Quality · ") for label in labels)
+    assert "Best Overall Score" not in labels
+    assert "What Drives Churn" in text_of(trained_app)
+
+
+def test_flagging_by_how_many_can_be_contacted(trained_app):
+    new = make_customers(200, seed=13).drop(columns=["Churn"])
+    upload_file(trained_app, 1, new.to_csv(index=False).encode(), "capacity.csv")
+    next(r for r in trained_app.radio if r.label == "Choose who gets flagged by").set_value(
+        "How many customers I can contact")
+    trained_app.run()
+    next(n for n in trained_app.number_input if n.label == "Customers you can contact").set_value(25)
+    trained_app.run()
+    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    trained_app.run()
+    assert not trained_app.exception, [e.value for e in trained_app.exception]
+    assert {m.label: m.value for m in trained_app.metric}["Flagged At Risk"] == "25"
+    table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
+    flagged = table[table["Flagged At Risk"] == "Yes"]
+    assert flagged["Churn Probability"].min() >= table.loc[table["Flagged At Risk"] == "No", "Churn Probability"].max()
+    assert set(table["Risk Level"]) <= {"High", "Medium", "Low"} and (flagged["Risk Level"] == "High").all()
+    assert table["Risk Score"].between(0, 100).all()
+
+
+def test_customer_value_weighs_risk_in_money(trained_app):
+    new = make_customers(200, seed=14).drop(columns=["Churn"])
+    upload_file(trained_app, 1, new.to_csv(index=False).encode(), "value.csv")
+    next(r for r in trained_app.radio if r.label == "Choose who gets flagged by").set_value(
+        "Most profit (your numbers above)")
+    trained_app.run()
+    next(b for b in trained_app.selectbox if b.label == "Column with each customer's value (optional)").select(
+        "Total Charges")
+    trained_app.run()
+    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    trained_app.run()
+    assert not trained_app.exception, [e.value for e in trained_app.exception]
+    table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
+    assert "Value At Risk" in table.columns
+    gain_positive = table["Expected Gain From Contact"] > 0
+    assert (table.loc[gain_positive, "Flagged At Risk"] == "Yes").all()
+    assert "Value At Risk In This File" in {m.label for m in trained_app.metric}
+
+
 def test_home_page_renders():
     at = start_app()
     assert "Churn Analytics Studio" in at.title[0].value
@@ -204,7 +250,7 @@ def test_home_page_renders():
 
 def test_upload_then_training_shows_results_on_unseen_customers(trained_app):
     metrics = {m.label: m.value for m in trained_app.metric}
-    assert metrics["🏆 Best Model"] == "Logistic Regression"
+    assert "Best model: Logistic Regression" in text_of(trained_app)
     assert float(metrics["ROC-AUC"]) > 0.7
     assert "held back" in text_of(trained_app)
 

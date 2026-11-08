@@ -95,7 +95,7 @@ def run_one(folder, name, cfg, depth):
     X_new = apply_features(X_new, artifact.feature_spec)[artifact.model_columns]
     per_model = {k: r["model"].predict_proba(X_new)[:, 1] for k, r in run.results.items() if r.get("model") is not None}
     table = pd.DataFrame([
-        dict(model=k, selection_score=run.results[k]["best_overall_score"], unseen_pr_auc=average_precision_score(y, v),
+        dict(model=k, selection_pr_auc=run.results[k]["pr_auc"], unseen_pr_auc=average_precision_score(y, v),
              unseen_roc_auc=roc_auc_score(y, v))
         for k, v in per_model.items()
     ]).sort_values("unseen_pr_auc", ascending=False)
