@@ -119,8 +119,6 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col, positive_
         st.warning(f"Signal assessment skipped: {result['error']}")
         return
 
-    _sec("📡", "Top Features")
-
     tier_icon = {"Strong": "🟢", "Medium": "🟡", "Weak": "🔴"}
     top_rows = []
     for row in result["top_features"]:
@@ -130,9 +128,8 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col, positive_
             "Signal":                   f"{row['signal']:.3f}",
             "Why This Feature Matters": row["explanation"],
         })
-    st.dataframe(pd.DataFrame(top_rows), width="stretch", hide_index=True)
-
-    st.divider()
+    with st.expander("📡 Which columns predict churn", expanded=False):
+        st.dataframe(pd.DataFrame(top_rows), width="stretch", hide_index=True)
 
 
 def _estimate_runtime(df: pd.DataFrame, selected_models: list,
@@ -292,28 +289,50 @@ def _show_trained_sections():
     saved = SavedModel.from_run(st.session_state.run)
     _predict_section(saved)
     st.divider()
-    _sec("📊", "Check Past Predictions Against What Happened")
-    _outcomes_section(saved)
+    with st.expander("📊 Check past predictions against what happened", expanded=False):
+        _outcomes_section(saved)
 
 
 def _show_results():
-    """Renders the results of the last training run from session_state."""
-    from src.evaluator import build_comparison_table
-
+    """The result of the last training run: one clear number, the details in closed sections."""
     run       = st.session_state.run
-    results   = run.results
     best_name = run.best_model_name
     holdout   = run.holdout
 
     st.divider()
+    _sec("📈", "Step 4 - Results")
 
     for _msg in run.warnings:
         st.warning(_msg)
-    for _msg in run.notes:
-        st.info(_msg)
 
-    _sec("📈", "Step 4 - Evaluation Results")
+    top10 = min(holdout["lift_top10"] * holdout["actual_rate"], 1.0)
+    st.markdown(f"#### 🏆 Best model: {best_name}")
+    s1, s2 = st.columns([1, 3])
+    s1.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
+              help="0 is a coin toss and 100 a perfect ranking. 60+ is excellent.")
+    s2.markdown(
+        f"Tested on **{run.n_holdout:,} customers the model never saw**. Of the 10% it rated riskiest, "
+        f"**{top10:.0%} really left**, against {holdout['actual_rate']:.0%} of all customers "
+        f"({holdout['lift_top10']:.1f} times as many)."
+    )
 
+    with st.expander("📊 All metrics and model comparison", expanded=False):
+        _show_all_metrics(run)
+    with st.expander("🧭 What drives churn", expanded=False):
+        _show_drivers(run.drivers)
+    with st.expander("🎯 Who to contact first", expanded=False):
+        _show_lift(holdout, run.n_holdout)
+    with st.expander("💾 Save this model", expanded=False):
+        _save_model_section(run)
+
+
+def _show_all_metrics(run):
+    """Every number behind the headline, for whoever wants to check it."""
+    from src.evaluator import build_comparison_table
+
+    results   = run.results
+    best_name = run.best_model_name
+    holdout   = run.holdout
     mins = int(run.runtime_seconds // 60)
     secs = int(run.runtime_seconds % 60)
     st.caption(f"⏱️ Total pipeline runtime: **{mins}m {secs}s**")
@@ -321,6 +340,8 @@ def _show_results():
         f"Measured on {run.holdout_description}. They played no part in training, tuning, choosing "
         f"the model or setting the threshold, so these numbers are the fair estimate for new customers."
     )
+    for _msg in run.notes:
+        st.caption(_msg)
 
     _unseen_help = f"Measured on {run.n_holdout:,} customers the model had never seen."
     ranges = holdout.get("intervals", {})
@@ -329,8 +350,7 @@ def _show_results():
         low_high = ranges.get(key)
         return f" 95% range: {fmt.format(low_high[0])} to {fmt.format(low_high[1])}." if low_high else ""
 
-    st.markdown(f"#### 🏆 Best model: {best_name}")
-    st.caption("Chosen by the highest PR-AUC in the comparison below.")
+    st.caption(f"{best_name} was chosen by the highest PR-AUC in the comparison below.")
     st.markdown(f"##### How well does it rank customers?  *(on {run.n_holdout:,} new customers)*")
     k2, k3, k4, k5 = st.columns(4)
     k2.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
@@ -387,14 +407,7 @@ def _show_results():
         },
     )
 
-    # ── Step 11: Professional Model Analysis ─────────────────────────────────
     _show_professional_analysis(best_name, holdout)
-
-    _show_drivers(run.drivers)
-
-    _show_lift(holdout, run.n_holdout)
-
-    _save_model_section(run)
 
 
 def _explain_roc(roc: float) -> str:
@@ -467,14 +480,7 @@ def _explain_f1(f1: float) -> str:
 
 def _show_professional_analysis(best_name: str, holdout: dict):
     """Plain-language explanation of the winner's results on unseen customers."""
-    _sec("🧠", "What Do the Results Mean?")
-
-    st.markdown(
-        "Below is a plain-language explanation of what these numbers actually mean - "
-        "no technical background needed."
-    )
-
-    st.markdown(f"### 🏆 {best_name}")
+    st.markdown("##### What do these numbers mean?")
     st.markdown(f"**PR-AUC:** {_explain_pr_auc(holdout['pr_auc'])}")
     st.markdown(f"**Top 10% Lift:** {_explain_lift(holdout['lift_top10'], holdout['actual_rate'])}")
     st.markdown(f"**ROC-AUC:** {_explain_roc(holdout['roc_auc'])}")
@@ -634,7 +640,7 @@ def _date_options(df: pd.DataFrame, target_col: str, id_col):
         return None, None
 
     key = f"{st.session_state.get('_df_hash')}_{target_col}"
-    with st.expander("📅 Dates and testing", expanded=True):
+    with st.expander("📅 Dates and testing", expanded=False):
         st.markdown(
             f"Date columns found: **{', '.join(dates)}**. Each one is used as the number of days "
             "before a reference date, such as how long ago a customer last logged in."
@@ -657,7 +663,9 @@ def _date_options(df: pd.DataFrame, target_col: str, id_col):
             ["Random customers", "The most recent customers"],
             key=f"split_mode_{key}",
             help="Testing on the most recent customers shows how the model does on the future, "
-                 "which is how it will be used. It is usually a little lower than a random test.",
+                 "which is how it will be used. It is usually a little lower than a random test. Order them "
+                 "by the date the data was taken or the customer joined, never by a date that depends on "
+                 "leaving, such as the last login.",
         )
         split_by = None
         if test_on == "The most recent customers":
@@ -671,18 +679,12 @@ def _show_drift(report):
 
     if report is None:
         return
-    st.markdown("#### Has The Data Changed Since Training?")
+    st.markdown("##### Change in each column")
     if report.too_few:
         st.info(f"{report.n_customers} customers are too few to compare with the training data reliably.")
         return
     if report.retrain_recommended:
-        moved = ", ".join(f"**{c}**" for c in report.shifted) or "none of the single columns"
-        st.warning(
-            f"🔁 **These customers differ clearly from the training data** (score shift "
-            f"{report.score_psi:.2f}; columns that moved: {moved}). If this file is a segment you chose, "
-            "such as one region, that is expected and the model still applies. If it is your whole "
-            "customer base, the customers have changed: **train the model again on recent history**."
-        )
+        st.caption("The columns that moved are listed above the table.")
     elif report.score_psi > WATCH_PSI or not report.columns.empty and report.columns["PSI"].max() > WATCH_PSI:
         st.info(
             f"🟡 Some change since training (score shift {report.score_psi:.2f}). "
@@ -690,13 +692,12 @@ def _show_drift(report):
         )
     else:
         st.success(f"✅ These customers look like the training customers (score shift {report.score_psi:.2f}).")
-    with st.expander("Change per column (PSI)"):
-        st.caption(
-            f"PSI compares how this file's values spread across the training ranges. Below {WATCH_PSI} is "
-            f"stable, above {SHIFT_PSI} is a real shift."
-        )
-        table = report.columns.assign(PSI=report.columns["PSI"].map("{:.3f}".format))
-        st.dataframe(table, width="stretch", hide_index=True)
+    st.caption(
+        f"PSI compares how this file's values spread across the training ranges. Below {WATCH_PSI} is "
+        f"stable, above {SHIFT_PSI} is a real shift."
+    )
+    table = report.columns.assign(PSI=report.columns["PSI"].map("{:.3f}".format))
+    st.dataframe(table, width="stretch", hide_index=True)
 
 
 def _outcomes_section(model, prefix: str = ""):
@@ -795,7 +796,6 @@ def _show_drivers(drivers):
     """What moves churn risk across all customers, measured on customers the model did not train on."""
     if drivers is None or len(drivers) == 0:
         return
-    _sec("🧭", "What Drives Churn")
     top = drivers.iloc[0]
     st.markdown(
         f"The column that moves churn risk the most is **{top['Column']}**: on average it shifts a customer's "
@@ -823,7 +823,6 @@ def _show_drivers(drivers):
 
 def _show_lift(holdout: dict, n_holdout: int):
     """How much of the churn a campaign reaches when it can only contact the riskiest few."""
-    _sec("🎯", "Who To Contact First")
     lift = holdout["lift_table"]
     top = lift.iloc[0]
     top_two = lift.iloc[1]
@@ -846,38 +845,38 @@ def _economics_inputs(prefix: str, df_new: pd.DataFrame | None = None):
     from src.business import Economics
     from src.pipeline_builder import detect_decimal, is_text_column, parse_numeric_column
 
-    with st.expander("💰 Campaign economics — set these to see the money", expanded=False):
-        st.caption("Use your own currency. Rough numbers are fine; the result shows how much they matter.")
-        e1, e2, e3 = st.columns(3)
-        value = e1.number_input(
-            "Value of a customer who stays", min_value=1.0, value=1000.0, step=100.0,
-            key=f"{prefix}econ_value",
-            help="What you lose when a customer leaves, for example a year of profit from them.")
-        cost = e2.number_input(
-            "Cost of one retention contact", min_value=0.0, value=50.0, step=10.0,
-            key=f"{prefix}econ_cost",
-            help="A call, a discount or an offer, including staff time.")
-        success = e3.slider(
-            "Churners a contact keeps", min_value=0.05, max_value=1.0, value=0.25, step=0.05,
-            key=f"{prefix}econ_success",
-            help="Of the customers who would have left and were contacted, the share who stay. "
-                 "Measure it with a test campaign if you can.")
+    st.markdown("##### 💰 Campaign economics")
+    st.caption("Use your own currency. Rough numbers are fine; the result shows how much they matter.")
+    e1, e2, e3 = st.columns(3)
+    value = e1.number_input(
+        "Value of a customer who stays", min_value=1.0, value=1000.0, step=100.0,
+        key=f"{prefix}econ_value",
+        help="What you lose when a customer leaves, for example a year of profit from them.")
+    cost = e2.number_input(
+        "Cost of one retention contact", min_value=0.0, value=50.0, step=10.0,
+        key=f"{prefix}econ_cost",
+        help="A call, a discount or an offer, including staff time.")
+    success = e3.slider(
+        "Churners a contact keeps", min_value=0.05, max_value=1.0, value=0.25, step=0.05,
+        key=f"{prefix}econ_success",
+        help="Of the customers who would have left and were contacted, the share who stay. "
+             "Measure it with a test campaign if you can.")
 
-        values = None
-        if df_new is not None:
-            numeric = {}
-            for col in df_new.columns:
-                raw = df_new[col]
-                parsed = parse_numeric_column(raw, detect_decimal(raw) if is_text_column(raw) else ".")
-                if parsed.notna().mean() >= 0.9 and parsed.nunique() > 2:
-                    numeric[col] = parsed
-            choice = st.selectbox(
-                "Column with each customer's value (optional)", ["(same value for everyone)"] + list(numeric),
-                key=f"{prefix}econ_value_col",
-                help="For example yearly revenue or margin per customer. Risk is then weighed in money, "
-                     "so a valuable customer at 30% risk can come before a small one at 50%.")
-            if choice in numeric:
-                values = numeric[choice].to_numpy()
+    values = None
+    if df_new is not None:
+        numeric = {}
+        for col in df_new.columns:
+            raw = df_new[col]
+            parsed = parse_numeric_column(raw, detect_decimal(raw) if is_text_column(raw) else ".")
+            if parsed.notna().mean() >= 0.9 and parsed.nunique() > 2:
+                numeric[col] = parsed
+        choice = st.selectbox(
+            "Column with each customer's value (optional)", ["(same value for everyone)"] + list(numeric),
+            key=f"{prefix}econ_value_col",
+            help="For example yearly revenue or margin per customer. Risk is then weighed in money, "
+                 "so a valuable customer at 30% risk can come before a small one at 50%.")
+        if choice in numeric:
+            values = numeric[choice].to_numpy()
     return Economics(value, cost, success), values
 
 
@@ -891,7 +890,6 @@ def _save_model_section(run):
     """Lets the user keep the trained model and use it again without retraining."""
     from src.model_store import SavedModel, save_model, signing_key
 
-    _sec("💾", "Save This Model")
     key = signing_key()
     if key is None:
         st.info(_SAVING_OFF)
@@ -963,22 +961,116 @@ def _saved_model_tab():
         "These numbers are from when the model was trained. Customers change over time, "
         "so retrain regularly on recent history."
     )
-    _show_drivers(getattr(saved, "drivers", None))
+    with st.expander("🧭 What drives churn", expanded=False):
+        _show_drivers(getattr(saved, "drivers", None))
     st.divider()
     _sec("🔮", "Predict New Customers")
     _predict_section(saved, prefix="saved_")
     st.divider()
-    _sec("📊", "Check Past Predictions Against What Happened")
-    _outcomes_section(saved, prefix="saved_")
+    with st.expander("📊 Check past predictions against what happened", expanded=False):
+        _outcomes_section(saved, prefix="saved_")
+
+
+def _flagging_inputs(model, df_new, prefix, thr_curve):
+    """How customers get flagged: by balance, by profit or by how many can be contacted."""
+    from src.business import campaign_estimate, contact_everyone
+
+    artifact = model.artifact
+    economics, values = _economics_inputs(prefix, df_new)
+    st.markdown("##### Who gets flagged")
+    goal = st.radio(
+        "Choose who gets flagged by",
+        ["Best balance (F1)", "Most profit (your numbers above)", "How many customers I can contact"],
+        horizontal=True, key=f"{prefix}threshold_goal",
+    )
+    by_profit = goal.startswith("Most profit")
+    by_capacity = goal.startswith("How many")
+    per_customer_value = by_profit and values is not None
+    breakeven = economics.breakeven
+    capacity = None
+    selected_thr = None
+
+    if by_capacity:
+        capacity = int(st.number_input(
+            "Customers you can contact", min_value=1, max_value=len(df_new),
+            value=min(100, len(df_new)), step=10, key=f"{prefix}capacity",
+            help="The riskiest customers in this file are flagged, up to this number."))
+        st.caption(f"The **{capacity:,} riskiest** customers in this file will be flagged.")
+    elif per_customer_value:
+        st.caption(
+            "Each customer is flagged when contacting them is expected to pay off: churn probability × share "
+            "kept × that customer's value is more than the cost of the contact. Valuable customers are "
+            "contacted at lower risk than small ones."
+        )
+    else:
+        auto_thr = (float(np.clip(round(breakeven, 2), 0.02, 0.90)) if by_profit
+                    else round(float(artifact.threshold), 2))
+        st.markdown("##### Sensitivity")
+        sl_col, hint_col = st.columns([3, 2])
+        with sl_col:
+            selected_thr = st.slider(
+                "Decision Threshold",
+                min_value=0.02, max_value=0.90,
+                value=auto_thr, step=0.01,
+                key=f"{prefix}threshold_slider_{goal}",
+                help=(
+                    "A customer is flagged when their churn probability reaches this value.\n\n"
+                    "Lower → more customers flagged (higher Recall, more false alarms).\n\n"
+                    "Higher → fewer customers flagged (fewer false alarms, may miss some churners)."
+                ),
+            )
+            row = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
+            st.caption(
+                f"At threshold **{selected_thr:.2f}** — measured on customers the model had not seen: "
+                f"Recall **{float(row['recall'].values[0]):.0%}** · "
+                f"Precision **{float(row['precision'].values[0]):.0%}**"
+            )
+
+            if by_profit:
+                clipped = "" if 0.02 <= breakeven <= 0.90 else (
+                    f" The exact value, {breakeven:.3f}, is outside the 0.02–0.90 range, so the nearest end is used.")
+                st.caption(
+                    f"Why {auto_thr:.2f}? A contact pays for itself when the customer's churn probability is above "
+                    f"cost ÷ (share kept × value) = {economics.cost:,.0f} ÷ ({economics.success:.0%} × "
+                    f"{economics.value:,.0f}) = **{breakeven:.3f}**. Below that, the expected saving is smaller "
+                    f"than the cost of the contact. This works because the probabilities are calibrated."
+                    + clipped
+                )
+            else:
+                st.caption(
+                    f"Why {auto_thr:.2f}? It gave the highest **F1 score**, the balance between catching "
+                    f"churners (Recall) and avoiding false alarms (Precision). Every threshold from 0.02 "
+                    f"to 0.90 was tested on calibrated predictions for customers each fold had not seen."
+                )
+
+        with hint_col:
+            if abs(selected_thr - auto_thr) <= 0.02:
+                st.info("💰 **Recommended setting** — the most profitable cut for your numbers." if by_profit else
+                        "⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
+            elif selected_thr < auto_thr:
+                st.info("🔍 **More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
+            else:
+                st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
+
+        estimate = campaign_estimate(thr_curve, model.holdout["actual_rate"], economics)
+        at_threshold = estimate.iloc[(estimate["threshold"] - selected_thr).abs().argsort()[:1]].iloc[0]
+        everyone = contact_everyone(model.holdout["actual_rate"], economics)
+        st.markdown(
+            f"**At this threshold, per 1,000 customers like the unseen ones:** contact "
+            f"**{at_threshold['contacted']:,.0f}**, reach **{at_threshold['churners_reached']:,.0f}** of the "
+            f"{model.holdout['actual_rate'] * 1000:,.0f} who would leave, keep about "
+            f"**{at_threshold['customers_saved']:,.0f}**. Net result **{at_threshold['net']:,.0f}**, against "
+            f"{everyone:,.0f} for contacting everyone and 0 for doing nothing."
+        )
+
+    return economics, values, goal, capacity, selected_thr
 
 
 def _predict_section(model, prefix: str = ""):
     """New customer prediction UI, for a model just trained or loaded from a file."""
     from src.data_loader import load_uploaded_file
     from src.errors import ChurnAppError
-    from src.explain import MAX_CUSTOMERS, TOP_REASONS, format_reason
     from src.schema import require_usable
-    from src.utils import to_csv_bytes
 
     artifact = model.artifact
     state = st.session_state
@@ -1053,95 +1145,17 @@ def _predict_section(model, prefix: str = ""):
         st.warning(_note)
 
     # ── Who gets flagged ──────────────────────────────────────────────────────
-    from src.business import campaign_estimate, contact_everyone, file_estimate, risk_levels
+    from src.business import risk_levels
 
     thr_curve = model.holdout["threshold_curve"]
-    economics, values = _economics_inputs(prefix, df_new)
-    goal = st.radio(
-        "Choose who gets flagged by",
-        ["Best balance (F1)", "Most profit (your numbers above)", "How many customers I can contact"],
-        horizontal=True, key=f"{prefix}threshold_goal",
-    )
+    flagging = st.expander("🎚️ Who gets flagged, and the money (optional)", expanded=False)
+    flagging.caption("By default the model flags the customers at the best balance between catching leavers "
+                     "and avoiding false alarms. Change it here, or enter your numbers to see the money.")
+    with flagging:
+        economics, values, goal, capacity, selected_thr = _flagging_inputs(model, df_new, prefix, thr_curve)
     by_profit = goal.startswith("Most profit")
     by_capacity = goal.startswith("How many")
     per_customer_value = by_profit and values is not None
-    breakeven = economics.breakeven
-    capacity = None
-    selected_thr = None
-
-    if by_capacity:
-        capacity = int(st.number_input(
-            "Customers you can contact", min_value=1, max_value=len(df_new),
-            value=min(100, len(df_new)), step=10, key=f"{prefix}capacity",
-            help="The riskiest customers in this file are flagged, up to this number."))
-        st.caption(f"The **{capacity:,} riskiest** customers in this file will be flagged.")
-    elif per_customer_value:
-        st.caption(
-            "Each customer is flagged when contacting them is expected to pay off: churn probability × share "
-            "kept × that customer's value is more than the cost of the contact. Valuable customers are "
-            "contacted at lower risk than small ones."
-        )
-    else:
-        auto_thr = (float(np.clip(round(breakeven, 2), 0.02, 0.90)) if by_profit
-                    else round(float(artifact.threshold), 2))
-        st.markdown("#### Sensitivity Setting")
-        sl_col, hint_col = st.columns([3, 2])
-        with sl_col:
-            selected_thr = st.slider(
-                "Decision Threshold",
-                min_value=0.02, max_value=0.90,
-                value=auto_thr, step=0.01,
-                key=f"{prefix}threshold_slider_{goal}",
-                help=(
-                    "A customer is flagged when their churn probability reaches this value.\n\n"
-                    "Lower → more customers flagged (higher Recall, more false alarms).\n\n"
-                    "Higher → fewer customers flagged (fewer false alarms, may miss some churners)."
-                ),
-            )
-            row = thr_curve.iloc[(thr_curve["threshold"] - selected_thr).abs().argsort()[:1]]
-            st.caption(
-                f"At threshold **{selected_thr:.2f}** — measured on customers the model had not seen: "
-                f"Recall **{float(row['recall'].values[0]):.0%}** · "
-                f"Precision **{float(row['precision'].values[0]):.0%}**"
-            )
-
-            with st.expander(f"Why {auto_thr:.2f}?"):
-                if by_profit:
-                    clipped = "" if 0.02 <= breakeven <= 0.90 else (
-                        f" The exact value, {breakeven:.3f}, is outside the 0.02–0.90 range, so the nearest end is used.")
-                    st.markdown(
-                        f"A contact pays for itself when the customer's churn probability is above "
-                        f"cost ÷ (share kept × value) = {economics.cost:,.0f} ÷ ({economics.success:.0%} × "
-                        f"{economics.value:,.0f}) = **{breakeven:.3f}**. Below that, the expected saving is smaller "
-                        f"than the cost of the contact. This works because the probabilities are calibrated."
-                        + clipped
-                    )
-                else:
-                    st.markdown(
-                        f"**{auto_thr:.2f}** gave the highest **F1 score**, the balance between catching "
-                        f"churners (Recall) and avoiding false alarms (Precision). Every threshold from 0.02 "
-                        f"to 0.90 was tested on calibrated predictions for customers each fold had not seen."
-                    )
-
-        with hint_col:
-            if abs(selected_thr - auto_thr) <= 0.02:
-                st.info("💰 **Recommended setting** — the most profitable cut for your numbers." if by_profit else
-                        "⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
-            elif selected_thr < auto_thr:
-                st.info("🔍 **More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
-            else:
-                st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
-
-        estimate = campaign_estimate(thr_curve, model.holdout["actual_rate"], economics)
-        at_threshold = estimate.iloc[(estimate["threshold"] - selected_thr).abs().argsort()[:1]].iloc[0]
-        everyone = contact_everyone(model.holdout["actual_rate"], economics)
-        st.markdown(
-            f"**At this threshold, per 1,000 customers like the unseen ones:** contact "
-            f"**{at_threshold['contacted']:,.0f}**, reach **{at_threshold['churners_reached']:,.0f}** of the "
-            f"{model.holdout['actual_rate'] * 1000:,.0f} who would leave, keep about "
-            f"**{at_threshold['customers_saved']:,.0f}**. Net result **{at_threshold['net']:,.0f}**, against "
-            f"{everyone:,.0f} for contacting everyone and 0 for doing nothing."
-        )
 
     # ── Predict button ────────────────────────────────────────────────────────
     if st.button("🔮 Predict Churn", type="primary", key=f"{prefix}predict_btn", disabled=not allow_missing):
@@ -1186,6 +1200,16 @@ def _predict_section(model, prefix: str = ""):
     m4.metric("Low Risk",         f"{int((levels == 'Low').sum()):,}",
               help="No riskier than the average customer.")
 
+    _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains, state[reasons_name], prefix)
+
+    with st.expander("💰 Expected campaign result", expanded=False):
+        _show_campaign(raw_probs, flagged_mask, economics, values)
+    _show_changes(raw_probs, model, state.get(drift_name))
+
+
+def _show_campaign(raw_probs, flagged_mask, economics, values):
+    from src.business import file_estimate
+
     campaign = file_estimate(raw_probs, flagged_mask, economics, values)
     b1, b2, b3, b4 = st.columns(4)
     b1.metric("Expected Churners Among Flagged", f"{campaign['expected_churners_reached']:,.0f}",
@@ -1201,14 +1225,38 @@ def _predict_section(model, prefix: str = ""):
         st.metric("Value At Risk In This File", f"{float(np.nansum(raw_probs * np.nan_to_num(values))):,.0f}",
                   help="Each customer's value times their churn probability, added up: the value expected to leave.")
 
-    # ── Risk compared with history ────────────────────────────────────────────
+
+def _show_changes(raw_probs, model, drift):
+    """Whether these customers look like the training customers. Closed unless something moved."""
+    total    = len(raw_probs)
     expected = float(raw_probs.mean())
     historic = model.churn_rate
     diff_pp  = (expected - historic) * 100
     # A small file wanders by chance, so the alert scales with its size
     tolerance_pp = max(5.0, 300 * float(raw_probs.std()) / np.sqrt(max(total, 1)))
+    risk_off = total >= _MIN_CUSTOMERS_TO_COMPARE and abs(diff_pp) > tolerance_pp
+    drift_off = drift is not None and not drift.too_few and drift.retrain_recommended
+    if risk_off:
+        st.warning(
+            f"⚠️ This file's average predicted risk ({expected:.1%}) is {abs(diff_pp):.1f} points away "
+            f"from the historical churn rate ({historic:.1%}). These customers may really be riskier or "
+            "safer, or they may differ from the customers the model learned from."
+        )
+    if drift_off:
+        moved = ", ".join(f"**{c}**" for c in drift.shifted) or "none of the single columns"
+        st.warning(
+            f"🔁 **These customers differ clearly from the training data** (score shift "
+            f"{drift.score_psi:.2f}; columns that moved: {moved}). If this file is a segment you chose, "
+            "such as one region, that is expected and the model still applies. If it is your whole "
+            "customer base, the customers have changed: **train the model again on recent history**."
+        )
+    with st.expander("📈 Has the data changed since training?", expanded=False):
+        _show_change_details(raw_probs, model, drift, expected, historic, diff_pp, risk_off)
 
-    st.markdown("#### Risk Compared With History")
+
+def _show_change_details(raw_probs, model, drift, expected, historic, diff_pp, risk_off):
+    total = len(raw_probs)
+    st.markdown("##### Risk compared with history")
     cr1, cr2, cr3 = st.columns(3)
     cr1.metric("Historical Churn Rate", f"{historic:.1%}",
                help="Churn rate observed in the training dataset.")
@@ -1219,22 +1267,19 @@ def _predict_section(model, prefix: str = ""):
 
     if total < _MIN_CUSTOMERS_TO_COMPARE:
         st.info(f"{total} customers are too few to compare with the historical churn rate.")
-    elif abs(diff_pp) > tolerance_pp:
-        st.warning(
-            f"⚠️ This file's average predicted risk ({expected:.1%}) is {abs(diff_pp):.1f} points away "
-            f"from the historical churn rate ({historic:.1%}). These customers may really be riskier or "
-            "safer, or they may differ from the customers the model learned from."
-        )
-    else:
+    elif not risk_off:
         st.success(
             f"✅ This file's average predicted risk ({expected:.1%}) is in line with the historical "
             f"churn rate ({historic:.1%})."
         )
+    _show_drift(drift)
 
-    _show_drift(state.get(drift_name))
 
-    st.divider()
+def _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains, all_reasons, prefix):
+    from src.explain import MAX_CUSTOMERS, TOP_REASONS, format_reason
+    from src.utils import to_csv_bytes
 
+    total = len(raw_probs)
     display_df = df_new.copy()
     display_df["Risk Score"]        = np.round(raw_probs * 100).astype(int)
     display_df["Risk Level"]        = levels
@@ -1246,7 +1291,7 @@ def _predict_section(model, prefix: str = ""):
     for i in range(TOP_REASONS):
         display_df[f"Reason {i + 1}"] = [
             format_reason(reasons[i]) if flagged and i < len(reasons) else ""
-            for flagged, reasons in zip(flagged_mask, state[reasons_name])
+            for flagged, reasons in zip(flagged_mask, all_reasons)
         ]
 
     st.caption(
@@ -1455,6 +1500,14 @@ with _tab_pipeline:
             help="Number and percentage of customers who churned in the historical data.",
         )
 
+    from src.config import RECOMMENDED_MIN_CUSTOMERS
+    if len(_y_preview) < RECOMMENDED_MIN_CUSTOMERS:
+        st.warning(
+            f"⚠️ **{len(_y_preview):,} customers is a small sample.** Below {RECOMMENDED_MIN_CUSTOMERS:,} the "
+            "results move a lot from one sample to the next (Microsoft's churn model requires at least "
+            f"{RECOMMENDED_MIN_CUSTOMERS:,}). The model will still train, so treat it as a first look."
+        )
+
     # ── Leak screening ────────────────────────────────────────────────────────
     _leak_key = (st.session_state.get("_df_hash"), target_col, id_col, positive_label_str)
     if st.session_state.get("_leak_key") != _leak_key:
@@ -1488,48 +1541,50 @@ with _tab_pipeline:
 
     # ── Steps 3–11: Run Pipeline ──────────────────────────────────────────────
     from src.config import PRODUCTION_MODELS
-    _sec("🚀", "Step 3 - Run Full Machine Learning Pipeline")
+    _sec("🚀", "Step 3 - Train The Model")
 
     from src.config import SEARCH_PRESETS, DEFAULT_SEARCH_DEPTH
 
     model_col, btn_col = st.columns([3, 1])
     with model_col:
-        all_option   = "All Models"
-        model_choices = [all_option] + PRODUCTION_MODELS
-        sel_col, depth_col = st.columns([3, 1])
-        with sel_col:
-            selected_raw = st.multiselect(
-                "Models to train",
-                options=model_choices,
-                default=[all_option],
-                help="Select one or more models. Choose 'All Models' to train all 5 production models.",
-            )
-        with depth_col:
-            _depths = list(SEARCH_PRESETS.keys())
-            search_depth = st.selectbox(
-                "Search depth",
-                options=_depths,
-                index=_depths.index(DEFAULT_SEARCH_DEPTH),
-                help=(
-                    "How many hyperparameter combinations to try per model. "
-                    "Deeper searches can find a slightly better model but take "
-                    "considerably longer. On a small shared CPU a very long run "
-                    "can outlast the browser connection, so start shallower there."
-                ),
-            )
-        budget = SEARCH_PRESETS[search_depth]
+        st.markdown("All five models are trained and the best one is kept. The defaults suit most files.")
+        with st.expander("⚙️ Training options", expanded=False):
+            all_option   = "All Models"
+            model_choices = [all_option] + PRODUCTION_MODELS
+            sel_col, depth_col = st.columns([3, 1])
+            with sel_col:
+                selected_raw = st.multiselect(
+                    "Models to train",
+                    options=model_choices,
+                    default=[all_option],
+                    help="Select one or more models. Choose 'All Models' to train all 5 production models.",
+                )
+            with depth_col:
+                _depths = list(SEARCH_PRESETS.keys())
+                search_depth = st.selectbox(
+                    "Search depth",
+                    options=_depths,
+                    index=_depths.index(DEFAULT_SEARCH_DEPTH),
+                    help=(
+                        "How many hyperparameter combinations to try per model. "
+                        "Deeper searches can find a slightly better model but take "
+                        "considerably longer. On a small shared CPU a very long run "
+                        "can outlast the browser connection, so start shallower there."
+                    ),
+                )
+            budget = SEARCH_PRESETS[search_depth]
 
-        if all_option in selected_raw or not selected_raw:
-            selected_models = PRODUCTION_MODELS.copy()
-        else:
-            selected_models = [m for m in PRODUCTION_MODELS if m in selected_raw]
+            if all_option in selected_raw or not selected_raw:
+                selected_models = PRODUCTION_MODELS.copy()
+            else:
+                selected_models = [m for m in PRODUCTION_MODELS if m in selected_raw]
 
-        st.caption(
-            f"Training: **{', '.join(selected_models)}**  ·  "
-            f"Optuna trials: **{budget['optuna_trials']}**  ·  "
-            f"CV folds: **{budget['hpo_cv_folds']}**  ·  Tuning: **ROC-AUC**"
-        )
-        with st.expander("⚙️ Runtime details", expanded=False):
+            st.caption(
+                f"Training: **{', '.join(selected_models)}**  ·  "
+                f"Optuna trials: **{budget['optuna_trials']}**  ·  "
+                f"CV folds: **{budget['hpo_cv_folds']}**  ·  Tuning: **ROC-AUC**"
+            )
+            st.markdown("**Runtime**")
             from src.runtime_env import ON_CLOUD as _oc, N_JOBS as _nj, CPU_SOURCE as _src
             import sklearn as _sk
             st.markdown(
@@ -1540,7 +1595,7 @@ with _tab_pipeline:
                 f"scikit-learn **{_sk.__version__}**"
             )
 
-        with st.expander("ℹ️ When to use each model", expanded=False):
+            st.markdown("**When to use each model**")
             st.markdown(
                 "| Model | Best when… | Watch out for |\n"
                 "|---|---|---|\n"

@@ -128,6 +128,23 @@ def test_the_time_split_tests_on_the_most_recent_customers():
     assert run.n_holdout == 120
     assert "most recent" in run.holdout_description and "joined" in run.holdout_description
     assert "(2024-04-25 to 2024-08-22)" in run.holdout_description
+    assert not any("churned at" in w for w in run.warnings)
+
+
+def test_a_time_split_whose_recent_customers_churn_far_more_is_questioned():
+    df = dated_customers()
+    df["Joined"] = (pd.Timestamp("2023-01-01") + pd.to_timedelta(np.arange(len(df)), "D")).strftime("%Y-%m-%d")
+    # As when the date depends on leaving: the latest rows are mostly leavers
+    recent = df.index[-120:]
+    df.loc[recent, "Churn"] = np.where(np.arange(120) % 3 == 0, "No", "Yes")
+    run = run_training(df, "Churn", id_col="Customer ID", selected_models=LR, budget=FAST_BUDGET, split_by="Joined")
+    warning = next(w for w in run.warnings if "churned at" in w)
+    assert "66.7%" in warning and "last-activity" in warning
+
+
+def test_a_small_sample_is_flagged(dated_run, training_run):
+    assert any("Only 600 customers" in w for w in dated_run.warnings)
+    assert not any("customers. With fewer than" in w for w in training_run.warnings)
 
 
 def test_a_time_split_needs_both_outcomes_in_the_recent_customers():

@@ -55,6 +55,7 @@ def wait_for_training(at, timeout=TIMEOUT):
 def text_of(at) -> str:
     parts = [m.value for m in at.markdown] + [c.value for c in at.caption]
     parts += [e.value for e in at.error] + [w.value for w in at.warning]
+    parts += [e.label for e in at.expander]
     return "\n".join(parts)
 
 
@@ -133,7 +134,7 @@ def test_without_a_key_on_a_hosted_app_saving_is_off(monkeypatch):
 
 
 def test_results_show_who_to_contact_first(trained_app):
-    assert "Who To Contact First" in text_of(trained_app)
+    assert "Who to contact first" in text_of(trained_app)
     lift = next(d.value for d in trained_app.dataframe if "Lift" in d.value.columns)
     assert len(lift) == 10
 
@@ -187,7 +188,7 @@ def test_scoring_shows_whether_the_data_has_changed(trained_app):
     upload_file(trained_app, 1, new.to_csv(index=False).encode(), "same.csv")
     next(b for b in trained_app.button if "Predict Churn" in b.label).click()
     trained_app.run()
-    assert "Has The Data Changed Since Training?" in text_of(trained_app)
+    assert "Has the data changed since training?" in text_of(trained_app)
     assert not any("train the model again" in w.value for w in trained_app.warning)
 
     shifted = new.assign(Tenure=70)
@@ -217,7 +218,7 @@ def test_results_show_quality_lift_and_drivers(trained_app):
     assert {"PR-AUC", "Top 10% Lift", "Calibration Error"} <= labels
     assert any(label.startswith("Prediction Quality · ") for label in labels)
     assert "Best Overall Score" not in labels
-    assert "What Drives Churn" in text_of(trained_app)
+    assert "What drives churn" in text_of(trained_app)
 
 
 def test_flagging_by_how_many_can_be_contacted(trained_app):
@@ -414,3 +415,16 @@ def test_unrecognised_target_codes_ask_the_user():
     box = next(b for b in at.selectbox if b.label == "Which value means the customer left?")
     assert box.value == "2"
     assert "only a guess" in text_of(at)
+
+
+def test_a_small_training_file_is_flagged(trained_app):
+    # 500 customers is below what commercial churn tools ask for
+    assert any("small sample" in w.value for w in trained_app.warning)
+
+
+def test_results_lead_with_one_number_and_keep_the_rest_closed(trained_app):
+    labels = [e.label for e in trained_app.expander]
+    for section in ("📊 All metrics and model comparison", "🧭 What drives churn", "🎯 Who to contact first",
+                    "📊 Check past predictions against what happened", "⚙️ Training options"):
+        assert section in labels
+    assert not any(e.proto.expanded for e in trained_app.expander)

@@ -29,7 +29,8 @@ from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 from .calibration import CalibratedModel
 from .config import (
     IMBALANCE_HIGH, IMBALANCE_LOW, MIN_ROWS_PER_CLASS, MIN_TRAINING_ROWS, RANDOM_STATE,
-    SUSPICIOUS_HOLDOUT_AUC, TEST_SIZE, VERY_LARGE_DATASET_ROWS, WARN_ROWS_PER_CLASS,
+    RECOMMENDED_MIN_CUSTOMERS, SUSPICIOUS_HOLDOUT_AUC, TEST_SIZE, TIME_SPLIT_RATE_RATIO,
+    VERY_LARGE_DATASET_ROWS, WARN_ROWS_PER_CLASS,
 )
 from .errors import DataValidationError
 from .evaluator import evaluate_all, evaluate_holdout, pick_best_model
@@ -219,6 +220,11 @@ def run_training(
     _validate_columns(profile)
     _check_duplicates(clean, id_std, warnings)
     warnings.extend(profile["general_warnings"][:5])
+    if len(y) < RECOMMENDED_MIN_CUSTOMERS:
+        warnings.append(
+            f"Only {len(y):,} customers. With fewer than {RECOMMENDED_MIN_CUSTOMERS:,} the results move a lot "
+            "from one sample to the next, so treat them as a first look."
+        )
     if len(y) > VERY_LARGE_DATASET_ROWS:
         warnings.append(f"Very large dataset ({len(y):,} rows). Consider stratified sampling.")
 
@@ -246,6 +252,8 @@ def run_training(
     train_idx, test_idx, holdout_description = _split(df_features, y, groups, split_by)
     X_train, X_test = X.loc[train_idx], X.loc[test_idx]
     y_train, y_test = y.loc[train_idx], y.loc[test_idx]
+    if split_by:
+        _check_time_split(y_train, y_test, split_by, warnings)
     groups_train = groups.loc[train_idx] if groups is not None else None
 
     report(20, "Creating features from the training customers only…")
@@ -406,6 +414,18 @@ def _split(df_features: pd.DataFrame, y: pd.Series, groups: Optional[pd.Series],
     train_idx, test_idx = train_test_split(
         y.index, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
     return train_idx, test_idx, f"{len(test_idx):,} customers held back from the start"
+
+
+def _check_time_split(y_train: pd.Series, y_test: pd.Series, split_by: str, warnings: list[str]) -> None:
+    """A date that depends on the outcome, such as last activity, sorts the leavers to one side."""
+    before, after = float(y_train.mean()), float(y_test.mean())
+    if min(before, after) == 0 or max(before / after, after / before) >= TIME_SPLIT_RATE_RATIO:
+        warnings.append(
+            f"The most recent customers by **{split_by}** churned at {after:.1%}, against {before:.1%} for the "
+            "earlier ones. If this date depends on whether the customer left, such as a last-activity or "
+            "cancellation date, the test is misleading: test on random customers instead. If it is the date "
+            "the data was taken or the customer joined, churn really changed over time."
+        )
 
 
 def _require_both_outcomes(y_test: pd.Series, who: str) -> None:

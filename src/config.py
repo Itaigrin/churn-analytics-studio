@@ -25,6 +25,12 @@ SUSPICIOUS_HOLDOUT_AUC = 0.995
 # ── Dataset size buckets ──────────────────────────────────────────────────────
 LARGE_DATASET_ROWS      = 50_000
 VERY_LARGE_DATASET_ROWS = 200_000
+# Below this many labelled customers results swing a lot from one sample to the next;
+# Microsoft Customer Insights requires at least this many for its churn model
+RECOMMENDED_MIN_CUSTOMERS = 1_000
+# A time split whose test churn rate is this many times higher or lower than the
+# training customers' points to a date that depends on the outcome
+TIME_SPLIT_RATE_RATIO = 2.0
 
 # ── Class-imbalance thresholds ────────────────────────────────────────────────
 IMBALANCE_LOW  = 0.20
