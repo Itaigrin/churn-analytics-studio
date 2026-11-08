@@ -43,10 +43,16 @@ def training_is_running(at) -> bool:
     return any("Running Pipeline" in m.value for m in at.markdown)
 
 
+def _result_not_shown_yet(at) -> bool:
+    # The job can finish between the page checking it and drawing the progress bar: that
+    # page shows neither, and the next one shows the result
+    return bool(at.query_params.get("job")) and at.session_state.run is None and not at.error
+
+
 def wait_for_training(at, timeout=TIMEOUT):
     """Training runs as a server job, so the page has to be asked again until it is done."""
     deadline = time.time() + timeout
-    while training_is_running(at):
+    while training_is_running(at) or _result_not_shown_yet(at):
         assert time.time() < deadline, "training did not finish"
         time.sleep(0.5)
         at.run()
