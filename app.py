@@ -331,7 +331,7 @@ def _show_results():
 
     st.markdown(f"#### 🏆 Best model: {best_name}")
     st.caption("Chosen by the highest PR-AUC in the comparison below.")
-    st.markdown("##### How well does it rank customers?")
+    st.markdown(f"##### How well does it rank customers?  *(on {run.n_holdout:,} new customers)*")
     k2, k3, k4, k5 = st.columns(4)
     k2.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
               help="0 is a coin toss and 100 a perfect ranking (2 × ROC-AUC − 1), the same idea as the "
@@ -344,7 +344,7 @@ def _show_results():
                    + _unseen_help + _range("lift_top10", "{:.2f}"))
     k5.metric("ROC-AUC", f"{holdout['roc_auc']:.4f}", help=_unseen_help + _range("roc_auc"))
 
-    st.markdown("##### How true are its probabilities?")
+    st.markdown(f"##### How true are its probabilities?  *(on {run.n_holdout:,} new customers)*")
     p1, p2, p3 = st.columns(3)
     p1.metric("Predicted vs Actual Churn", f"{holdout['mean_probability']:.1%} vs {holdout['actual_rate']:.1%}",
               help="Average predicted risk against the share who really left. " + _unseen_help)
@@ -354,10 +354,21 @@ def _show_results():
     p3.metric("Log Loss", f"{holdout['log_loss']:.4f}",
               help="Penalises confident wrong predictions. Lower is better.")
 
-    st.markdown("#### Model Comparison  *(sorted by PR-AUC)*")
+    chosen = results[best_name]
+    st.info(
+        f"**Why the table below shows different numbers:** it measures every model on the "
+        f"{run.n_train:,} training customers, each scored by a model that did not learn from them (5-fold), "
+        f"and that is how the winner is chosen. There {best_name} scored PR-AUC **{chosen['pr_auc']:.4f}** "
+        f"and ROC-AUC **{chosen['roc_auc']:.4f}**. The numbers above are its final test on "
+        f"{run.n_holdout:,} other customers, kept out of every choice: PR-AUC **{holdout['pr_auc']:.4f}**, "
+        f"ROC-AUC **{holdout['roc_auc']:.4f}**. Two different groups of customers give slightly "
+        "different results, which is normal. Expect the numbers above on new customers."
+    )
+
+    st.markdown("#### Model Comparison  *(on the training customers, 5-fold · sorted by PR-AUC)*")
     st.caption(
-        "All models on one basis: 5-fold predictions on the training customers. This is how the "
-        "winner is chosen, so its numbers here differ slightly from the unseen-customer numbers above."
+        "All models on one basis: each customer is scored by a model trained without them. "
+        "This is how the winner is chosen."
     )
     cmp_df = build_comparison_table(results)
     st.dataframe(

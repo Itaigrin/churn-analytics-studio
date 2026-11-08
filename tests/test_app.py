@@ -306,6 +306,15 @@ def test_a_training_error_is_shown_after_the_job_ends():
     assert any("at least 100" in e.value for e in at.error)
 
 
+def test_the_two_sets_of_numbers_are_explained_side_by_side(trained_app):
+    note = next(i.value for i in trained_app.info if "different numbers" in i.value)
+    run = trained_app.session_state.run
+    oof = run.results[run.best_model_name]
+    assert f"{oof['pr_auc']:.4f}" in note and f"{run.holdout['pr_auc']:.4f}" in note
+    assert f"{run.n_holdout:,} new customers" in text_of(trained_app)
+    assert "on the training customers, 5-fold" in text_of(trained_app)
+
+
 def test_home_page_renders():
     at = start_app()
     assert "Churn Analytics Studio" in at.title[0].value
