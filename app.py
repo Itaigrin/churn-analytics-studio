@@ -190,18 +190,61 @@ def _estimate_runtime(df: pd.DataFrame, selected_models: list,
     return _fmt(lo), _fmt(hi)
 
 
+@st.cache_resource
+def _job_registry():
+    """One registry per server process, shared by every session."""
+    from src.jobs import JobRegistry
+    return JobRegistry()
+
+
+_PRED_STATE = ("model_file", "_pred_file_key", "_pred_df_new", "_pred_report", "pred_raw_probs", "pred_reasons")
+
+
 def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: list,
                   budget: dict | None, positive_label, exclude_cols: list,
                   as_of=None, split_by=None):
-    """Runs the training flow and stores the outcome in st.session_state."""
+    """Start training as a server job. The page follows it, and finds it again after a reconnect."""
     from src.errors import ChurnAppError
     from src.workflow import run_training
 
-    prog_container = st.empty()
+    try:
+        job = _job_registry().start(
+            run_training,
+            df=df.copy(), target_col=target_col, id_col=id_col,
+            selected_models=selected_models, budget=budget,
+            positive_label=positive_label, exclude_cols=exclude_cols,
+            as_of=as_of, split_by=split_by,
+        )
+    except ChurnAppError as exc:
+        st.error(str(exc))
+        return
+    st.session_state.job_id = job.id
+    st.query_params["job"] = job.id
+    st.rerun()
 
-    def _render(pct, msg):
-        prog_container.markdown(
-            f"""
+
+def _current_job():
+    """The training job this page follows, from the session or, after a reconnect, from the address."""
+    job_id = st.session_state.get("job_id") or st.query_params.get("job")
+    return _job_registry().get(job_id)
+
+
+def _forget_job():
+    st.session_state.job_id = None
+    st.query_params.pop("job", None)
+
+
+def _attach_finished_job(job):
+    """Show a finished job's model, once, and start prediction afresh for it."""
+    if job.result is None or st.session_state.get("run") is job.result:
+        return
+    st.session_state.update(run=job.result, training_done=True, job_id=job.id,
+                            **{name: None for name in _PRED_STATE})
+
+
+def _render_progress(pct: int, msg: str):
+    st.markdown(
+        f"""
 <div style="background:#1e2130;border:1px solid #3a3f5c;border-radius:10px;padding:16px 20px;margin-bottom:8px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
     <span style="color:#a0aec0;font-size:13px">Running Pipeline…</span>
@@ -213,45 +256,44 @@ def _run_pipeline(df: pd.DataFrame, id_col, target_col: str, selected_models: li
   <div style="margin-top:10px;color:#e2e8f0;font-size:13px">⏳ {msg.replace("**", "")}</div>
 </div>
 """,
-            unsafe_allow_html=True,
-        )
+        unsafe_allow_html=True,
+    )
 
-    try:
-        run = run_training(
-            df, target_col, id_col=id_col,
-            selected_models=selected_models,
-            budget=budget,
-            positive_label=positive_label,
-            exclude_cols=exclude_cols,
-            progress=_render,
-            as_of=as_of,
-            split_by=split_by,
-        )
-    except ChurnAppError as exc:
-        prog_container.empty()
-        st.error(str(exc))
+
+@st.fragment(run_every=2)
+def _training_progress(job_id: str):
+    """Redrawn every two seconds while the job runs; reloads the page when it is done."""
+    job = _job_registry().get(job_id)
+    if job is None:
         return
-    except Exception as exc:
-        prog_container.empty()
-        st.error(f"Pipeline error: {exc}")
+    if job.done:
+        st.rerun()
+    _render_progress(job.pct, job.message)
+    st.caption(
+        "Training runs on the server. If the page reloads or the connection drops, it carries on, "
+        "and this page picks it up again. Keep this address to come back to it."
+    )
+
+
+def _show_job_error(job):
+    st.error(job.error)
+    if job.error_details:
         with st.expander("Full traceback"):
-            st.code(traceback.format_exc())
-        return
+            st.code(job.error_details)
 
-    st.session_state.update(dict(
-        run               = run,
-        training_done     = True,
-        # Clear prediction cache so the next file is checked against the new model
-        model_file        = None,
-        _pred_file_key    = None,
-        _pred_df_new      = None,
-        _pred_report      = None,
-        pred_raw_probs    = None,
-        pred_reasons      = None,
-    ))
-    time.sleep(0.5)
-    prog_container.empty()
-    st.rerun()
+
+def _show_trained_sections():
+    """Results, prediction and outcome checks for the model in this session."""
+    from src.model_store import SavedModel
+
+    _show_results()
+    st.divider()
+    _sec("🔮", "Predict New Customers")
+    saved = SavedModel.from_run(st.session_state.run)
+    _predict_section(saved)
+    st.divider()
+    _sec("📊", "Check Past Predictions Against What Happened")
+    _outcomes_section(saved)
 
 
 def _show_results():
@@ -1287,6 +1329,7 @@ with _tab_pipeline:
                 _prog.progress(10, text="Done ✅")
                 st.session_state.run = None
                 st.session_state.training_done = None
+                _forget_job()
                 st.session_state.df      = _df
                 st.session_state._df_hash = _file_hash
                 time.sleep(0.2)
@@ -1297,8 +1340,24 @@ with _tab_pipeline:
                 # Do NOT clear st.session_state.df — keep the last valid DataFrame
 
     df = st.session_state.df
+    job = _current_job()
+    if job is not None and job.done:
+        _attach_finished_job(job)
 
     if df is None:
+        # A reconnect starts a new session without the uploaded file, but the job carries on
+        if job is not None and not job.done:
+            st.info("Training is running on the server. Its results will appear here when it finishes.")
+            _training_progress(job.id)
+            st.stop()
+        if st.session_state.training_done:
+            st.info(
+                "The training file is not loaded in this session any more, but the model trained on it is. "
+                "Its results are below, and you can score new customers with it. Upload the file again "
+                "to train a new model."
+            )
+            _show_trained_sections()
+            st.stop()
         st.info("👆 Upload a dataset to begin.")
         st.stop()
 
@@ -1493,19 +1552,13 @@ with _tab_pipeline:
         _run_pipeline(df, id_col, target_col, selected_models, budget, positive_label, exclude_cols,
                       as_of, split_by)
 
-    if st.session_state.training_done:
-        _show_results()
+    if job is not None and not job.done:
+        _training_progress(job.id)
+    elif job is not None and job.error:
+        _show_job_error(job)
 
-    st.divider()
-
-    # ── Predict New Customers ─────────────────────────────────────────────────
     if st.session_state.training_done:
-        _sec("🔮", "Predict New Customers")
-        from src.model_store import SavedModel
-        _predict_section(SavedModel.from_run(st.session_state.run))
-        st.divider()
-        _sec("📊", "Check Past Predictions Against What Happened")
-        _outcomes_section(SavedModel.from_run(st.session_state.run))
+        _show_trained_sections()
 
     st.divider()
     st.caption(
