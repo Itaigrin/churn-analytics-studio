@@ -1,5 +1,6 @@
 """Drives the real app.py through a real file upload, as a user would."""
 import os
+import time
 
 import pandas as pd
 import pytest
@@ -34,7 +35,21 @@ def run_pipeline(at):
     at.run()
     next(b for b in at.button if "Run Pipeline" in b.label).click()
     at.run()
+    wait_for_training(at)
     assert not at.exception, [e.value for e in at.exception]
+
+
+def training_is_running(at) -> bool:
+    return any("Running Pipeline" in m.value for m in at.markdown)
+
+
+def wait_for_training(at, timeout=TIMEOUT):
+    """Training runs as a server job, so the page has to be asked again until it is done."""
+    deadline = time.time() + timeout
+    while training_is_running(at):
+        assert time.time() < deadline, "training did not finish"
+        time.sleep(0.5)
+        at.run()
 
 
 def text_of(at) -> str:
@@ -241,6 +256,54 @@ def test_customer_value_weighs_risk_in_money(trained_app):
     gain_positive = table["Expected Gain From Contact"] > 0
     assert (table.loc[gain_positive, "Flagged At Risk"] == "Yes").all()
     assert "Value At Risk In This File" in {m.label for m in trained_app.metric}
+
+
+def test_training_survives_a_lost_connection():
+    at = start_app()
+    upload_file(at, 0, make_customers(400).to_csv(index=False).encode())
+    for box in at.multiselect:
+        if box.label == "Models to train":
+            box.set_value(["Logistic Regression"])
+    for box in at.selectbox:
+        if box.label == "Search depth":
+            box.select("Quick")
+    at.run()
+    next(b for b in at.button if "Run Pipeline" in b.label).click()
+    at.run()
+    job_id = at.query_params["job"]
+    assert job_id and training_is_running(at)
+
+    # The browser reconnects: a brand new session, without the uploaded file, same address
+    reconnected = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    reconnected.query_params["job"] = job_id
+    reconnected.run()
+    assert not reconnected.exception, [e.value for e in reconnected.exception]
+    wait_for_training(reconnected)
+    assert "Best model: Logistic Regression" in text_of(reconnected)
+    assert any("not loaded in this session any more" in i.value for i in reconnected.info)
+    # The model can still score customers in the new session
+    new = make_customers(30, seed=5).drop(columns=["Churn"])
+    reconnected.file_uploader[1].upload("new.csv", new.to_csv(index=False).encode(), "text/csv")
+    reconnected.run()
+    next(b for b in reconnected.button if "Predict Churn" in b.label).click()
+    reconnected.run()
+    assert not reconnected.exception, [e.value for e in reconnected.exception]
+    assert {m.label: m.value for m in reconnected.metric}["Total Customers"] == "30"
+
+
+def test_an_unknown_job_address_just_shows_the_start_page():
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.query_params["job"] = "no-such-job"
+    at.run()
+    assert not at.exception
+    assert any("Upload a dataset to begin" in i.value for i in at.info)
+
+
+def test_a_training_error_is_shown_after_the_job_ends():
+    at = start_app()
+    upload_file(at, 0, make_customers(60).to_csv(index=False).encode())
+    run_pipeline(at)
+    assert any("at least 100" in e.value for e in at.error)
 
 
 def test_home_page_renders():
