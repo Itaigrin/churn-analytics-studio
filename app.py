@@ -1200,7 +1200,8 @@ def _predict_section(model, prefix: str = ""):
     m4.metric("Low Risk",         f"{int((levels == 'Low').sum()):,}",
               help="No riskier than the average customer.")
 
-    _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains, state[reasons_name], prefix)
+    _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains if by_profit else None,
+                         state[reasons_name], prefix)
 
     with st.expander("💰 Expected campaign result", expanded=False):
         _show_campaign(raw_probs, flagged_mask, economics, values)
@@ -1287,7 +1288,9 @@ def _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains,
     display_df["Churn Probability"] = np.round(raw_probs, 4)
     if values is not None:
         display_df["Value At Risk"] = np.round(raw_probs * np.nan_to_num(values), 2)
-    display_df["Expected Gain From Contact"] = np.round(gains, 2)
+    if gains is not None:
+        # Only meaningful once the user flags by profit with their own numbers
+        display_df["Expected Gain From Contact"] = np.round(gains, 2)
     for i in range(TOP_REASONS):
         display_df[f"Reason {i + 1}"] = [
             format_reason(reasons[i]) if flagged and i < len(reasons) else ""

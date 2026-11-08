@@ -428,3 +428,14 @@ def test_results_lead_with_one_number_and_keep_the_rest_closed(trained_app):
                     "📊 Check past predictions against what happened", "⚙️ Training options"):
         assert section in labels
     assert not any(e.proto.expanded for e in trained_app.expander)
+
+
+def test_the_money_column_appears_only_when_flagging_by_profit(trained_app):
+    new = make_customers(40, seed=17).drop(columns=["Churn"])
+    upload_file(trained_app, 1, new.to_csv(index=False).encode(), "plain.csv")
+    next(r for r in trained_app.radio if r.label == "Choose who gets flagged by").set_value("Best balance (F1)")
+    trained_app.run()
+    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    trained_app.run()
+    table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
+    assert "Expected Gain From Contact" not in table.columns
