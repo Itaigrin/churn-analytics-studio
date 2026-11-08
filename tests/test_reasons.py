@@ -113,3 +113,11 @@ def test_reasons_work_with_a_missing_column(customers):
     new = customers.drop(columns=["Churn", "Plan"]).head(10)
     p = run.artifact.predict_proba(new, allow_missing=True)
     assert len(run.artifact.explain(new, p)) == 10
+
+
+def test_a_count_risky_at_both_ends_names_its_riskiest_value():
+    from src.explain import overall_drivers
+    X = pd.DataFrame({"products": [1.0, 2.0, 3.0, 4.0] * 50})
+    effects = pd.DataFrame({"products": X["products"].map({1.0: 0.05, 2.0: -0.10, 3.0: 0.20, 4.0: 0.30})})
+    drivers = overall_drivers(effects, X, ["products"], [])
+    assert drivers.loc[0, "Raises Risk"] == "4"

@@ -20,7 +20,9 @@ Upload your historical customer data, train 5 production-grade ML models, and ge
 
 - Automatic data profiling and predictive signal assessment
 - 5 production models: Logistic Regression, Random Forest, XGBoost, LightGBM, CatBoost
-- Best model selected by: `0.45 × PR-AUC + 0.35 × Recall + 0.20 × ROC-AUC`, with every model scored on one common basis
+- Best model selected by PR-AUC, with every model scored on one common basis. Results are reported as ranking (PR-AUC, top-10% lift, a 0–100 quality score), probability accuracy (calibration, log loss) and decision (recall and precision at the chosen threshold), with 95% ranges
+- What drives churn across all customers, plus risk levels and a 0–100 risk score per customer
+- Flag customers by balance, by profit or by how many you can contact, and weigh risk by each customer's value
 - Results reported on customers held back from training, tuning, model choice and threshold choice
 - Calibrated probabilities: among customers given 30% risk, about 30% really leave
 - Screening for columns that leak the answer (single-column leaks; a person still has to review the data)

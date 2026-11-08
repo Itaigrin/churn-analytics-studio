@@ -32,9 +32,13 @@ class Economics:
         """The churn probability above which a contact pays for itself."""
         return self.cost / (self.success * self.value)
 
-    def gain(self, probabilities: np.ndarray) -> np.ndarray:
-        """Expected profit of contacting each customer."""
-        return probabilities * self.success * self.value - self.cost
+    def gain(self, probabilities: np.ndarray, values=None) -> np.ndarray:
+        """
+        Expected profit of contacting each customer. values, when given, is each
+        customer's own worth; without it every customer is worth the same.
+        """
+        worth = self.value if values is None else np.nan_to_num(np.asarray(values, dtype=float))
+        return probabilities * self.success * worth - self.cost
 
 
 def campaign_estimate(curve: pd.DataFrame, churn_rate: float, economics: Economics,
@@ -59,17 +63,26 @@ def contact_everyone(churn_rate: float, economics: Economics, per: int = PER_CUS
     return churn_rate * per * economics.success * economics.value - per * economics.cost
 
 
-def file_estimate(probabilities: np.ndarray, threshold: float, economics: Economics) -> dict:
-    """Expected outcome of contacting everyone in this file at or above the threshold."""
-    contacted = probabilities >= threshold
+def file_estimate(probabilities: np.ndarray, contacted: np.ndarray, economics: Economics, values=None) -> dict:
+    """Expected outcome of contacting the customers marked in `contacted`."""
     expected_churners = float(probabilities[contacted].sum())
+    gains = economics.gain(probabilities, values)
     return {
         "contacted": int(contacted.sum()),
         "expected_churners_reached": expected_churners,
+        "share_of_expected_churners": expected_churners / max(float(probabilities.sum()), 1e-12),
         "expected_saved": expected_churners * economics.success,
         "cost": float(contacted.sum() * economics.cost),
-        "net": float(economics.gain(probabilities[contacted]).sum()),
+        "net": float(gains[contacted].sum()),
     }
+
+
+def risk_levels(probabilities: np.ndarray, flagged: np.ndarray, churn_rate: float) -> np.ndarray:
+    """
+    High: flagged for contact. Medium: riskier than the average customer, but not flagged.
+    Low: no riskier than the average customer.
+    """
+    return np.where(flagged, "High", np.where(probabilities >= churn_rate, "Medium", "Low"))
 
 
 def lift_table(y_true, y_prob, groups: int = 10) -> pd.DataFrame:

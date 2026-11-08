@@ -83,14 +83,14 @@ def test_all_five_models_train_without_error(training_run):
 def test_the_winner_tops_a_table_built_on_one_basis(training_run):
     table = build_comparison_table(training_run.results)
     assert table.iloc[0]["Model"] == training_run.best_model_name
-    scores = table["Best Overall Score"].astype(float).tolist()
+    scores = table["PR-AUC"].astype(float).tolist()
     assert scores == sorted(scores, reverse=True)
 
 
 def test_a_failed_model_goes_last_and_cannot_win():
     results = {
         "A": {"error": "boom", "model": None},
-        "B": {"model": object(), "pr_auc": .5, "recall": .5, "roc_auc": .7, "best_overall_score": .54},
+        "B": {"model": object(), "pr_auc": .5, "recall": .5, "roc_auc": .7, "lift_top10": 2.0, "log_loss": .4},
     }
     assert pick_best_model(results) == "B"
     assert build_comparison_table(results).iloc[-1]["Model"] == "A"
@@ -236,3 +236,46 @@ def test_the_user_can_keep_a_flagged_column():
 
 def test_the_real_columns_of_a_clean_file_are_not_flagged(customers):
     assert screen_columns(customers, "Churn", "Customer ID") == []
+
+
+def test_the_winner_is_the_model_with_the_highest_pr_auc():
+    results = {
+        "high recall": {"model": object(), "pr_auc": .60, "recall": .95, "roc_auc": .90},
+        "best ranking": {"model": object(), "pr_auc": .65, "recall": .40, "roc_auc": .85},
+    }
+    assert pick_best_model(results) == "best ranking"
+
+
+def test_results_answer_three_separate_questions(training_run):
+    holdout = training_run.holdout
+    for key in ("pr_auc", "roc_auc", "lift_top10", "log_loss", "brier", "calibration_error", "recall", "precision"):
+        assert key in holdout
+    assert holdout["lift_top10"] > 1.5
+    assert holdout["quality_score"] == pytest.approx(200 * holdout["roc_auc"] - 100)
+    assert holdout["quality_grade"] in {"Excellent", "Good", "Fair", "Weak"}
+
+
+def test_headline_metrics_come_with_a_range(training_run):
+    holdout = training_run.holdout
+    for key in ("pr_auc", "roc_auc", "lift_top10"):
+        low, high = holdout["intervals"][key]
+        assert low <= holdout[key] <= high
+    # A few hundred test customers leave real uncertainty, and the range should show it
+    assert 0 < holdout["intervals"]["pr_auc"][1] - holdout["intervals"]["pr_auc"][0] < 0.5
+
+
+@pytest.mark.parametrize("roc,grade", [(0.5, "Weak"), (0.65, "Fair"), (0.75, "Good"), (0.86, "Excellent")])
+def test_quality_grades(roc, grade):
+    from src.evaluator import quality_grade, quality_score
+    assert quality_grade(quality_score(roc)) == grade
+
+
+def test_what_drives_churn_is_found(training_run):
+    drivers = training_run.drivers
+    assert set(drivers.columns) == {"Column", "Average Effect", "Raises Risk"}
+    assert set(drivers["Column"].head(3)) & {"tenure", "support calls", "plan", "auto pay"}
+    by_column = drivers.set_index("Column")["Raises Risk"]
+    assert by_column["tenure"] == "Lower values"
+    # Support calls has few values, so its riskiest value is named instead of a direction
+    assert float(by_column["support calls"]) >= 4
+    assert by_column["plan"] == "basic"

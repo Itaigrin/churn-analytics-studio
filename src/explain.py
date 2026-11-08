@@ -29,6 +29,7 @@ from .feature_engineering import FeatureSpec, apply_features
 TOP_REASONS = 3
 MIN_EFFECT = 0.01       # below one percentage point it is not worth a line
 MAX_CUSTOMERS = 5_000   # the riskiest customers, to keep scoring time bounded
+_FEW_VALUES = 10        # numeric columns with this many values or fewer are described value by value
 _NUMERIC_POINTS = 7     # evenly spaced percentiles standing in for a numeric column
 _TOP_CATEGORIES = 10
 
@@ -101,6 +102,34 @@ def top_reasons(
             for i in order if row[i] >= MIN_EFFECT
         ])
     return reasons
+
+
+def overall_drivers(effects: pd.DataFrame, X: pd.DataFrame, numeric_cols: list[str],
+                    flag_cols: list[str]) -> pd.DataFrame:
+    """
+    The columns that move churn risk the most across customers, with the values that
+    raise it. Strength is the average size of a column's effect, in percentage points.
+    """
+    rows = []
+    for col in effects.columns:
+        effect = effects[col]
+        # A count such as "number of products" can be risky at both ends, so it is read like a category
+        if col in numeric_cols and X[col].nunique() > _FEW_VALUES:
+            values = X[col].astype(float)
+            known = values.notna()
+            moves_together = (known.sum() > 2 and values[known].std() > 0 and effect[known].std() > 0
+                              and np.corrcoef(values[known], effect[known])[0, 1] > 0)
+            raises = "Higher values" if moves_together else "Lower values"
+        else:
+            by_value = effect.groupby(X[col].astype(object).where(X[col].notna(), "missing")).mean()
+            riskiest = by_value.idxmax()
+            if col in flag_cols and riskiest in (0, 1, 0.0, 1.0):
+                riskiest = "Yes" if riskiest == 1 else "No"
+            raises = _format_value(riskiest)
+        rows.append({"Column": col.replace("_", " "), "Average Effect": float(effect.abs().mean() * 100),
+                     "Raises Risk": raises})
+    table = pd.DataFrame(rows, columns=["Column", "Average Effect", "Raises Risk"])
+    return table.sort_values("Average Effect", ascending=False).reset_index(drop=True)
 
 
 def format_reason(reason: Reason) -> str:
