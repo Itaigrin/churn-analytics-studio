@@ -252,7 +252,7 @@ def test_results_answer_three_separate_questions(training_run):
         assert key in holdout
     assert holdout["lift_top10"] > 1.5
     assert holdout["quality_score"] == pytest.approx(200 * holdout["roc_auc"] - 100)
-    assert holdout["quality_grade"] in {"Excellent", "Good", "Fair", "Weak"}
+    assert holdout["quality_grade"] in {"Check for leaks", "Excellent", "Good", "Fair", "Weak"}
 
 
 def test_headline_metrics_come_with_a_range(training_run):
@@ -264,7 +264,8 @@ def test_headline_metrics_come_with_a_range(training_run):
     assert 0 < holdout["intervals"]["pr_auc"][1] - holdout["intervals"]["pr_auc"][0] < 0.5
 
 
-@pytest.mark.parametrize("roc,grade", [(0.5, "Weak"), (0.65, "Fair"), (0.75, "Good"), (0.86, "Excellent")])
+@pytest.mark.parametrize("roc,grade", [(0.5, "Weak"), (0.65, "Fair"), (0.75, "Good"), (0.86, "Excellent"),
+                                       (0.98, "Check for leaks")])
 def test_quality_grades(roc, grade):
     from src.evaluator import quality_grade, quality_score
     assert quality_grade(quality_score(roc)) == grade

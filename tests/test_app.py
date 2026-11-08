@@ -445,3 +445,7 @@ def test_the_money_column_appears_only_when_flagging_by_profit(trained_app):
     trained_app.run()
     table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
     assert "Expected Gain From Contact" not in table.columns
+
+
+def test_the_quality_score_is_explained_next_to_it(trained_app):
+    assert "is not a test mark" in text_of(trained_app)

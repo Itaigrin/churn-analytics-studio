@@ -119,7 +119,14 @@ def quality_score(roc_auc: float) -> float:
     return float(np.clip(200 * roc_auc - 100, 0, 100))
 
 
+# Churn depends partly on things no file records, so a near-perfect score usually means a
+# column gives the answer away (it was recorded after the customer left)
+TOO_GOOD_SCORE = 95
+
+
 def quality_grade(score: float) -> str:
+    if score >= TOO_GOOD_SCORE:
+        return "Check for leaks"
     if score >= 60:
         return "Excellent"
     if score >= 40:

@@ -309,12 +309,22 @@ def _show_results():
     st.markdown(f"#### 🏆 Best model: {best_name}")
     s1, s2 = st.columns([1, 3])
     s1.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
-              help="0 is a coin toss and 100 a perfect ranking. 60+ is excellent.")
+              help="0 is a coin toss and 100 a perfect ranking (2 × ROC-AUC − 1).")
     s2.markdown(
         f"Tested on **{run.n_holdout:,} customers the model never saw**. Of the 10% it rated riskiest, "
         f"**{top10:.0%} really left**, against {holdout['actual_rate']:.0%} of all customers "
         f"({holdout['lift_top10']:.1f} times as many)."
     )
+    s2.caption(
+        "The score is not a test mark: 0 is a guess and 100 is knowing for sure who leaves. Part of churn "
+        "depends on things no file records, so strong churn models usually score 50–75, and 60+ is excellent."
+    )
+    if holdout["quality_grade"] == "Check for leaks":
+        st.warning(
+            "⚠️ **A score this high is rare in churn prediction.** Make sure no column is recorded after the "
+            "customer left, such as a cancellation reason, a closing date or a final balance. If none is, "
+            "the result is real."
+        )
 
     with st.expander("📊 All metrics and model comparison", expanded=False):
         _show_all_metrics(run)
