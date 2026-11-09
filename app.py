@@ -64,9 +64,18 @@ st.set_page_config(
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* Numbers line up in columns, as in financial software */
 [data-testid="stMetricValue"], [data-testid="stDataFrame"] { font-variant-numeric: tabular-nums; }
 [data-testid="stMetricValue"] { font-weight: 600; letter-spacing: -0.01em; }
+.hero { background: #4F46E5; border-radius: 14px; padding: 22px 28px; margin: 0 0 8px; }
+.hero .kicker { color: #C7C4FB; font-size: 12px; letter-spacing: .08em; margin: 0; }
+.hero h1 { color: #FFFFFF; font-size: 30px; font-weight: 700; margin: 4px 0 2px; padding: 0; }
+.hero p.sub { color: #E0E7FF; font-size: 15px; margin: 0; }
+[class*="st-key-kpi_"] { border-radius: 12px; padding: 14px 16px; }
+[class*="st-key-kpi_indigo"] { background: #EEF0FF; } [class*="st-key-kpi_indigo"] [data-testid="stMetricValue"] { color: #312E81; }
+[class*="st-key-kpi_green"] { background: #ECFDF5; } [class*="st-key-kpi_green"] [data-testid="stMetricValue"] { color: #065F46; }
+[class*="st-key-kpi_rose"] { background: #FFF1F2; } [class*="st-key-kpi_rose"] [data-testid="stMetricValue"] { color: #9F1239; }
+[class*="st-key-kpi_amber"] { background: #FFFBEB; } [class*="st-key-kpi_amber"] [data-testid="stMetricValue"] { color: #92400E; }
+[class*="st-key-kpi_slate"] { background: #F5F6FA; } [class*="st-key-kpi_slate"] [data-testid="stMetricValue"] { color: #1E1B4B; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,7 +89,7 @@ _MIN_CUSTOMERS_TO_COMPARE = 30
 
 def _sec(icon: str, title: str):
     """A section heading: a Material icon name and a title, with a thin rule under it."""
-    st.subheader(f":material/{icon}: {title}", divider="gray")
+    st.subheader(f":material/{icon}: {title}", divider="violet")
 
 
 def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col, positive_label,
@@ -289,13 +298,21 @@ def _show_results():
 
     top10 = min(holdout["lift_top10"] * holdout["actual_rate"], 1.0)
     st.markdown(f"#### Best model: {best_name}")
-    s1, s2 = st.columns([1, 3])
-    s1.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
-              help="0 is a coin toss and 100 a perfect ranking (2 × ROC-AUC − 1).")
+    c1, c2, c3 = st.columns(3)
+    with c1, st.container(key="kpi_indigo_quality"):
+        st.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
+                  help="0 is a coin toss and 100 a perfect ranking (2 × ROC-AUC − 1).")
+    with c2, st.container(key="kpi_green_top10"):
+        st.metric("Riskiest 10% Who Left", f"{top10:.0%}",
+                  help=f"Of the 10% of unseen customers the model rated riskiest. "
+                       f"{holdout['actual_rate']:.0%} of all customers left.")
+    with c3, st.container(key="kpi_slate_lift"):
+        st.metric("Times The Average", f"{holdout['lift_top10']:.1f}×",
+                  help="How many times more often the riskiest 10% leave than the average customer.")
+    s2 = st.container()
     s2.markdown(
         f"Tested on **{run.n_holdout:,} customers the model never saw**. Of the 10% it rated riskiest, "
-        f"**{top10:.0%} really left**, against {holdout['actual_rate']:.0%} of all customers "
-        f"({holdout['lift_top10']:.1f} times as many)."
+        f"{top10:.0%} really left, against {holdout['actual_rate']:.0%} of all customers."
     )
     s2.caption(
         "The score is not a test mark: 0 is a guess and 100 is knowing for sure who leaves, which no churn "
@@ -1187,12 +1204,16 @@ def _predict_section(model, prefix: str = ""):
 
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Customers",  f"{total:,}")
-    m2.metric("Flagged At Risk",  f"{n_flagged:,}", help="High risk: the customers to contact.")
-    m3.metric("Medium Risk",      f"{int((levels == 'Medium').sum()):,}",
-              help="Riskier than the average customer, but not flagged. Worth watching.")
-    m4.metric("Low Risk",         f"{int((levels == 'Low').sum()):,}",
-              help="No riskier than the average customer.")
+    with m1, st.container(key=f"kpi_indigo_{prefix}total"):
+        st.metric("Total Customers", f"{total:,}")
+    with m2, st.container(key=f"kpi_rose_{prefix}flagged"):
+        st.metric("Flagged At Risk", f"{n_flagged:,}", help="High risk: the customers to contact.")
+    with m3, st.container(key=f"kpi_amber_{prefix}medium"):
+        st.metric("Medium Risk", f"{int((levels == 'Medium').sum()):,}",
+                  help="Riskier than the average customer, but not flagged. Worth watching.")
+    with m4, st.container(key=f"kpi_green_{prefix}low"):
+        st.metric("Low Risk", f"{int((levels == 'Low').sum()):,}",
+                  help="No riskier than the average customer.")
 
     _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains if by_profit else None,
                          state[reasons_name], prefix)
@@ -1299,7 +1320,12 @@ def _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains,
         "to the total risk."
         + (f" Only the {MAX_CUSTOMERS:,} riskiest customers are explained." if total > MAX_CUSTOMERS else "")
     )
-    st.dataframe(display_df, width="stretch", hide_index=True)
+    _risk_colors = {"High": "color: #BE123C; font-weight: 600", "Medium": "color: #B45309; font-weight: 600",
+                    "Low": "color: #047857"}
+    _decimals = [c for c in display_df.columns if pd.api.types.is_float_dtype(display_df[c])]
+    styled = (display_df.style.map(lambda v: _risk_colors.get(v, ""), subset=["Risk Level"])
+              .format(lambda v: ("%.4f" % v).rstrip("0").rstrip(".") if pd.notna(v) else "", subset=_decimals))
+    st.dataframe(styled, width="stretch", hide_index=True)
 
     st.download_button(
         "Download predictions (CSV)", icon=":material/download:",
@@ -1321,8 +1347,12 @@ for _k in ["df", "run", "training_done"]:
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN UI
 # ══════════════════════════════════════════════════════════════════════════════
-st.title("Churn Analytics Studio")
-st.caption("Predict which customers will leave, and why.")
+st.markdown(
+    '<div class="hero"><p class="kicker">CHURN ANALYTICS STUDIO</p>'
+    '<h1>Know who will leave, and why</h1>'
+    '<p class="sub">Train on your customer history, then score new customers with reasons for each one.</p></div>',
+    unsafe_allow_html=True,
+)
 st.divider()
 
 _tab_pipeline, _tab_saved, _tab_guide = st.tabs([":material/model_training: Train & Predict", ":material/folder_open: Saved Model",

@@ -329,7 +329,7 @@ def test_the_two_sets_of_numbers_are_explained_side_by_side(trained_app):
 
 def test_home_page_renders():
     at = start_app()
-    assert "Churn Analytics Studio" in at.title[0].value
+    assert "Know who will leave" in text_of(at) and "CHURN ANALYTICS STUDIO" in text_of(at)
 
 
 def test_upload_then_training_shows_results_on_unseen_customers(trained_app):
