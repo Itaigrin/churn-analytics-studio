@@ -449,3 +449,4 @@ def test_the_money_column_appears_only_when_flagging_by_profit(trained_app):
 
 def test_the_quality_score_is_explained_next_to_it(trained_app):
     assert "is not a test mark" in text_of(trained_app)
+    assert "60+ Excellent" in text_of(trained_app)

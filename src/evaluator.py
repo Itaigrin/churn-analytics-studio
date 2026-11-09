@@ -124,6 +124,8 @@ def quality_score(roc_auc: float) -> float:
 TOO_GOOD_SCORE = 95
 
 
+# Bands as in Braze's churn Prediction Quality (Excellent 60-100, Good 40-60, Fair 20-40, Poor 0-20):
+# https://www.braze.com/docs/user_guide/brazeai/predictive_suite/predictive_churn/prediction_analytics/prediction_quality
 def quality_grade(score: float) -> str:
     if score >= TOO_GOOD_SCORE:
         return "Check for leaks"

@@ -316,8 +316,9 @@ def _show_results():
         f"({holdout['lift_top10']:.1f} times as many)."
     )
     s2.caption(
-        "The score is not a test mark: 0 is a guess and 100 is knowing for sure who leaves. Part of churn "
-        "depends on things no file records, so strong churn models usually score 50–75, and 60+ is excellent."
+        "The score is not a test mark: 0 is a guess and 100 is knowing for sure who leaves, which no churn "
+        "model reaches. The grades use the bands of Braze's churn predictions: 60+ Excellent, 40–60 Good, "
+        "20–40 Fair."
     )
     if holdout["quality_grade"] == "Check for leaks":
         st.warning(
