@@ -317,8 +317,8 @@ def _show_results():
     )
     s2.caption(
         "The score is not a test mark: 0 is a guess and 100 is knowing for sure who leaves, which no churn "
-        "model reaches. The grades use the bands of Braze's churn predictions: 60+ Excellent, 40–60 Good, "
-        "20–40 Fair."
+        "model reaches. Grades: 60+ Excellent, 40–60 Good, 20–40 Fair, as commercial churn tools grade "
+        "their predictions."
     )
     if holdout["quality_grade"] == "Check for leaks":
         st.warning(
@@ -549,7 +549,7 @@ def _show_guide():
             "Top 10% Lift",
             "How much better than random the riskiest customers are.",
             "Sort customers by risk and take the top 10%. Lift is how many times more often they leave than the "
-            "average customer. Campaign tools such as Braze and Pecan judge churn models this way, because a "
+            "average customer. Commercial churn tools judge models this way, because a "
             "retention team can usually reach only part of the customer base.",
             "🎯",
         ),
