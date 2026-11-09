@@ -33,14 +33,14 @@ def run_pipeline(at):
         if box.label == "Search depth":
             box.select("Quick")
     at.run()
-    next(b for b in at.button if "Run Pipeline" in b.label).click()
+    next(b for b in at.button if "Train the model" in b.label).click()
     at.run()
     wait_for_training(at)
     assert not at.exception, [e.value for e in at.exception]
 
 
 def training_is_running(at) -> bool:
-    return any("Running Pipeline" in m.value for m in at.markdown)
+    return any("Training in progress" in m.value for m in at.markdown)
 
 
 def _result_not_shown_yet(at) -> bool:
@@ -58,10 +58,15 @@ def wait_for_training(at, timeout=TIMEOUT):
         at.run()
 
 
+def _sections(at):
+    """Closed sections. With an icon, the test harness lists an expander as a status element."""
+    return list(at.expander) + list(at.status)
+
+
 def text_of(at) -> str:
     parts = [m.value for m in at.markdown] + [c.value for c in at.caption]
     parts += [e.value for e in at.error] + [w.value for w in at.warning]
-    parts += [e.label for e in at.expander]
+    parts += [e.label for e in _sections(at)]
     return "\n".join(parts)
 
 
@@ -87,7 +92,7 @@ def test_flagged_customers_show_their_reasons(trained_app):
     new["Tenure"] = 2
     new["Support Calls"] = 6
     upload_file(trained_app, 1, new.to_csv(index=False).encode(), "risky.csv")
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
     flagged = table[table["Flagged At Risk"] == "Yes"]
@@ -102,7 +107,7 @@ def test_a_model_saved_in_the_app_works_after_a_restart(trained_app, monkeypatch
     next(b for b in trained_app.button if b.label == "Prepare Model File").click()
     trained_app.run()
     assert not trained_app.exception, [e.value for e in trained_app.exception]
-    assert "⬇️ Download Model File" in _downloads(trained_app)
+    assert "Download model file" in _downloads(trained_app)
     model_file = trained_app.session_state.model_file
 
     fresh = start_app()
@@ -114,7 +119,7 @@ def test_a_model_saved_in_the_app_works_after_a_restart(trained_app, monkeypatch
     new = make_customers(50, seed=5).drop(columns=["Churn"])
     _uploader(fresh, "Upload new customers").upload("new.csv", new.to_csv(index=False).encode(), "text/csv")
     fresh.run()
-    next(b for b in fresh.button if "Predict Churn" in b.label).click()
+    next(b for b in fresh.button if "Predict churn" in b.label).click()
     fresh.run()
     assert not fresh.exception, [e.value for e in fresh.exception]
     assert {m.label: m.value for m in fresh.metric}["Total Customers"] == "50"
@@ -154,7 +159,7 @@ def test_the_profit_goal_sets_the_breakeven_threshold_and_shows_the_money(traine
     # Defaults: cost 50 / (25% kept x value 1,000) = 0.20
     assert any(s.label == "Decision Threshold" and s.value == pytest.approx(0.20) for s in trained_app.slider)
     assert "per 1,000 customers like the unseen ones" in text_of(trained_app)
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     assert not trained_app.exception, [e.value for e in trained_app.exception]
     labels = {m.label for m in trained_app.metric}
@@ -182,8 +187,8 @@ def test_dates_can_be_used_and_the_model_tested_on_recent_customers():
     new = dated_customers(30, seed=7).drop(columns=["Churn"])
     new["Joined"] = "2024-06-01"
     upload_file(at, 1, new.to_csv(index=False).encode(), "new.csv")
-    assert any(d.label == "📅 Count days back from" for d in at.date_input)
-    next(b for b in at.button if "Predict Churn" in b.label).click()
+    assert any(d.label == "Count days back from" for d in at.date_input)
+    next(b for b in at.button if "Predict churn" in b.label).click()
     at.run()
     assert not at.exception, [e.value for e in at.exception]
     assert {m.label: m.value for m in at.metric}["Total Customers"] == "30"
@@ -192,7 +197,7 @@ def test_dates_can_be_used_and_the_model_tested_on_recent_customers():
 def test_scoring_shows_whether_the_data_has_changed(trained_app):
     new = make_customers(300, seed=12).drop(columns=["Churn"])
     upload_file(trained_app, 1, new.to_csv(index=False).encode(), "same.csv")
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     assert "Has the data changed since training?" in text_of(trained_app)
     assert not any("train the model again" in w.value for w in trained_app.warning)
@@ -200,7 +205,7 @@ def test_scoring_shows_whether_the_data_has_changed(trained_app):
     shifted = new.assign(Tenure=70)
     shifted["Support Calls"] = shifted["Support Calls"] + 6
     upload_file(trained_app, 1, shifted.to_csv(index=False).encode(), "shifted.csv")
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     assert any("train the model again" in w.value for w in trained_app.warning)
 
@@ -212,7 +217,7 @@ def test_past_predictions_are_checked_against_what_happened(trained_app):
     trained_app.run()
     # Auto Pay also has two values and comes first; the column trained on must win
     assert next(b for b in trained_app.selectbox if b.label == "Column with what really happened").value == "Churn"
-    next(b for b in trained_app.button if b.label == "📊 Check The Model").click()
+    next(b for b in trained_app.button if b.label == "Check the model").click()
     trained_app.run()
     assert not trained_app.exception, [e.value for e in trained_app.exception]
     assert "Predicted vs Actual Churn" in {m.label for m in trained_app.metric}
@@ -235,7 +240,7 @@ def test_flagging_by_how_many_can_be_contacted(trained_app):
     trained_app.run()
     next(n for n in trained_app.number_input if n.label == "Customers you can contact").set_value(25)
     trained_app.run()
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     assert not trained_app.exception, [e.value for e in trained_app.exception]
     assert {m.label: m.value for m in trained_app.metric}["Flagged At Risk"] == "25"
@@ -255,7 +260,7 @@ def test_customer_value_weighs_risk_in_money(trained_app):
     next(b for b in trained_app.selectbox if b.label == "Column with each customer's value (optional)").select(
         "Total Charges")
     trained_app.run()
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     assert not trained_app.exception, [e.value for e in trained_app.exception]
     table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
@@ -275,7 +280,7 @@ def test_training_survives_a_lost_connection():
         if box.label == "Search depth":
             box.select("Quick")
     at.run()
-    next(b for b in at.button if "Run Pipeline" in b.label).click()
+    next(b for b in at.button if "Train the model" in b.label).click()
     at.run()
     job_id = at.query_params["job"]
     assert job_id and training_is_running(at)
@@ -292,7 +297,7 @@ def test_training_survives_a_lost_connection():
     new = make_customers(30, seed=5).drop(columns=["Churn"])
     reconnected.file_uploader[1].upload("new.csv", new.to_csv(index=False).encode(), "text/csv")
     reconnected.run()
-    next(b for b in reconnected.button if "Predict Churn" in b.label).click()
+    next(b for b in reconnected.button if "Predict churn" in b.label).click()
     reconnected.run()
     assert not reconnected.exception, [e.value for e in reconnected.exception]
     assert {m.label: m.value for m in reconnected.metric}["Total Customers"] == "30"
@@ -303,7 +308,7 @@ def test_an_unknown_job_address_just_shows_the_start_page():
     at.query_params["job"] = "no-such-job"
     at.run()
     assert not at.exception
-    assert any("Upload a dataset to begin" in i.value for i in at.info)
+    assert any("to begin" in i.value for i in at.info)
 
 
 def test_a_training_error_is_shown_after_the_job_ends():
@@ -341,7 +346,7 @@ def test_the_app_no_longer_promises_zero_leakage(trained_app):
 def test_predicting_new_customers_end_to_end(trained_app):
     new = make_customers(50, seed=5).drop(columns=["Churn"])
     upload_file(trained_app, 1, new.to_csv(index=False).encode(), "new.csv")
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     assert not trained_app.exception
     metrics = {m.label: m.value for m in trained_app.metric}
@@ -354,7 +359,7 @@ def test_predicting_new_customers_end_to_end(trained_app):
 def test_a_tiny_file_is_not_compared_with_history(trained_app):
     new = make_customers(5, seed=6).drop(columns=["Churn"])
     upload_file(trained_app, 1, new.to_csv(index=False).encode(), "tiny.csv")
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     assert any("too few to compare" in i.value for i in trained_app.info)
 
@@ -363,7 +368,7 @@ def test_a_file_from_another_business_is_refused_in_the_page(trained_app):
     wrong = b"Balance,Geography,Age\n1,FR,30\n2,DE,40\n"
     upload_file(trained_app, 1, wrong, "wrong.csv")
     assert any("does not look like" in e.value for e in trained_app.error)
-    assert not [b for b in trained_app.button if "Predict Churn" in b.label]
+    assert not [b for b in trained_app.button if "Predict churn" in b.label]
 
 
 def test_a_new_training_file_clears_the_old_results():
@@ -408,7 +413,7 @@ def test_undetected_target_says_so_instead_of_claiming_a_detection():
     df = make_customers(300).rename(columns={"Churn": "Outcome"})
     at = start_app()
     upload_file(at, 0, df.to_csv(index=False).encode())
-    box = next(b for b in at.selectbox if b.label == "Churn / Target column ★")
+    box = next(b for b in at.selectbox if b.label == "Churn column")
     assert box.value == "Auto Pay"
     assert "Could not detect it" in text_of(at)
 
@@ -429,11 +434,11 @@ def test_a_small_training_file_is_flagged(trained_app):
 
 
 def test_results_lead_with_one_number_and_keep_the_rest_closed(trained_app):
-    labels = [e.label for e in trained_app.expander]
-    for section in ("📊 All metrics and model comparison", "🧭 What drives churn", "🎯 Who to contact first",
-                    "📊 Check past predictions against what happened", "⚙️ Training options"):
+    labels = [e.label for e in _sections(trained_app)]
+    for section in ("All metrics and model comparison", "What drives churn", "Who to contact first",
+                    "Check past predictions against what happened", "Training options"):
         assert section in labels
-    assert not any(e.proto.expanded for e in trained_app.expander)
+    assert not any(e.proto.expanded for e in _sections(trained_app))
 
 
 def test_the_money_column_appears_only_when_flagging_by_profit(trained_app):
@@ -441,7 +446,7 @@ def test_the_money_column_appears_only_when_flagging_by_profit(trained_app):
     upload_file(trained_app, 1, new.to_csv(index=False).encode(), "plain.csv")
     next(r for r in trained_app.radio if r.label == "Choose who gets flagged by").set_value("Best balance (F1)")
     trained_app.run()
-    next(b for b in trained_app.button if "Predict Churn" in b.label).click()
+    next(b for b in trained_app.button if "Predict churn" in b.label).click()
     trained_app.run()
     table = next(d.value for d in trained_app.dataframe if "Churn Probability" in d.value.columns)
     assert "Expected Gain From Contact" not in table.columns

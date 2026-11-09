@@ -1,0 +1,35 @@
+# Business software look: white and light slate, one deep-blue accent, Inter.
+# Red, amber and green are kept for risk and status only.
+
+[theme]
+base = "light"
+primaryColor = "#1D4ED8"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8FAFC"
+textColor = "#0F172A"
+linkColor = "#1D4ED8"
+linkUnderline = false
+borderColor = "#E2E8F0"
+showWidgetBorder = true
+baseRadius = "8px"
+buttonRadius = "8px"
+
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+codeBackgroundColor = "#F1F5F9"
+codeTextColor = "#0F172A"
+baseFontSize = 15
+headingFontWeights = [700, 600, 600, 600, 600, 600]
+headingFontSizes = ["32px", "24px", "20px", "17px", "15px", "14px"]
+
+grayColor = "#64748B"
+blueColor = "#1D4ED8"
+redColor = "#DC2626"
+orangeColor = "#D97706"
+yellowColor = "#CA8A04"
+greenColor = "#059669"
+violetColor = "#6D28D9"
+
+dataframeBorderColor = "#E2E8F0"
+dataframeHeaderBackgroundColor = "#F8FAFC"
+chartCategoricalColors = ["#1D4ED8", "#64748B", "#059669", "#D97706", "#DC2626", "#6D28D9", "#0891B2"]

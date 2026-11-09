@@ -56,7 +56,7 @@ import streamlit as st
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Churn Analytics Studio",
-    page_icon="📊",
+    page_icon=":material/insights:",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -64,12 +64,9 @@ st.set_page_config(
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-.section-header {
-    font-size: 1.25rem; font-weight: 700; color: #1e40af;
-    border-bottom: 2px solid #2563eb; padding-bottom: 6px;
-    margin-bottom: 14px; margin-top: 4px;
-}
-.stProgress > div > div { background-color: #2563eb !important; }
+/* Numbers line up in columns, as in financial software */
+[data-testid="stMetricValue"], [data-testid="stDataFrame"] { font-variant-numeric: tabular-nums; }
+[data-testid="stMetricValue"] { font-weight: 600; letter-spacing: -0.01em; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,10 +79,8 @@ _MIN_CUSTOMERS_TO_COMPARE = 30
 
 
 def _sec(icon: str, title: str):
-    st.markdown(
-        f'<div class="section-header">{icon} {title}</div>',
-        unsafe_allow_html=True,
-    )
+    """A section heading: a Material icon name and a title, with a thin rule under it."""
+    st.subheader(f":material/{icon}: {title}", divider="gray")
 
 
 def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col, positive_label,
@@ -128,7 +123,7 @@ def _show_signal_assessment(df: pd.DataFrame, target_col: str, id_col, positive_
             "Signal":                   f"{row['signal']:.3f}",
             "Why This Feature Matters": row["explanation"],
         })
-    with st.expander("📡 Which columns predict churn", expanded=False):
+    with st.expander("Which columns predict churn", expanded=False, icon=":material/query_stats:"):
         st.dataframe(pd.DataFrame(top_rows), width="stretch", hide_index=True)
 
 
@@ -240,21 +235,8 @@ def _attach_finished_job(job):
 
 
 def _render_progress(pct: int, msg: str):
-    st.markdown(
-        f"""
-<div style="background:#1e2130;border:1px solid #3a3f5c;border-radius:10px;padding:16px 20px;margin-bottom:8px">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <span style="color:#a0aec0;font-size:13px">Running Pipeline…</span>
-    <span style="color:#63b3ed;font-weight:700;font-size:18px">{pct}%</span>
-  </div>
-  <div style="background:#2d3748;border-radius:6px;height:10px;overflow:hidden">
-    <div style="background:linear-gradient(90deg,#4299e1,#63b3ed);width:{pct}%;height:100%;border-radius:6px;transition:width 0.3s ease"></div>
-  </div>
-  <div style="margin-top:10px;color:#e2e8f0;font-size:13px">⏳ {msg.replace("**", "")}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"**Training in progress** · {pct}%")
+    st.progress(min(max(pct, 0), 100) / 100, text=msg.replace("**", ""))
 
 
 @st.fragment(run_every=2)
@@ -285,11 +267,11 @@ def _show_trained_sections():
 
     _show_results()
     st.divider()
-    _sec("🔮", "Predict New Customers")
+    _sec("online_prediction", "Predict new customers")
     saved = SavedModel.from_run(st.session_state.run)
     _predict_section(saved)
     st.divider()
-    with st.expander("📊 Check past predictions against what happened", expanded=False):
+    with st.expander("Check past predictions against what happened", expanded=False, icon=":material/fact_check:"):
         _outcomes_section(saved)
 
 
@@ -300,13 +282,13 @@ def _show_results():
     holdout   = run.holdout
 
     st.divider()
-    _sec("📈", "Step 4 - Results")
+    _sec("insights", "4 · Results")
 
     for _msg in run.warnings:
         st.warning(_msg)
 
     top10 = min(holdout["lift_top10"] * holdout["actual_rate"], 1.0)
-    st.markdown(f"#### 🏆 Best model: {best_name}")
+    st.markdown(f"#### Best model: {best_name}")
     s1, s2 = st.columns([1, 3])
     s1.metric(f"Prediction Quality · {holdout['quality_grade']}", f"{holdout['quality_score']:.0f}/100",
               help="0 is a coin toss and 100 a perfect ranking (2 × ROC-AUC − 1).")
@@ -322,18 +304,18 @@ def _show_results():
     )
     if holdout["quality_grade"] == "Check for leaks":
         st.warning(
-            "⚠️ **A score this high is rare in churn prediction.** Make sure no column is recorded after the "
+            "**A score this high is rare in churn prediction.** Make sure no column is recorded after the "
             "customer left, such as a cancellation reason, a closing date or a final balance. If none is, "
             "the result is real."
         )
 
-    with st.expander("📊 All metrics and model comparison", expanded=False):
+    with st.expander("All metrics and model comparison", expanded=False, icon=":material/analytics:"):
         _show_all_metrics(run)
-    with st.expander("🧭 What drives churn", expanded=False):
+    with st.expander("What drives churn", expanded=False, icon=":material/explore:"):
         _show_drivers(run.drivers)
-    with st.expander("🎯 Who to contact first", expanded=False):
+    with st.expander("Who to contact first", expanded=False, icon=":material/target:"):
         _show_lift(holdout, run.n_holdout)
-    with st.expander("💾 Save this model", expanded=False):
+    with st.expander("Save this model", expanded=False, icon=":material/save:"):
         _save_model_section(run)
 
 
@@ -346,7 +328,7 @@ def _show_all_metrics(run):
     holdout   = run.holdout
     mins = int(run.runtime_seconds // 60)
     secs = int(run.runtime_seconds % 60)
-    st.caption(f"⏱️ Total pipeline runtime: **{mins}m {secs}s**")
+    st.caption(f"Total pipeline runtime: **{mins}m {secs}s**")
     st.markdown(
         f"Measured on {run.holdout_description}. They played no part in training, tuning, choosing "
         f"the model or setting the threshold, so these numbers are the fair estimate for new customers."
@@ -505,7 +487,7 @@ def _show_professional_analysis(best_name: str, holdout: dict):
 def _show_guide():
     """Plain-language guide to every metric and model used in the app."""
 
-    st.markdown("## 📖 What does this app do?")
+    st.markdown("## What does this app do?")
     st.markdown(
         "This app looks at your historical customer data and learns the pattern of "
         "customers who eventually left (churned). It then uses that pattern to flag "
@@ -516,7 +498,7 @@ def _show_guide():
     st.divider()
 
     # ── Metrics ───────────────────────────────────────────────────────────────
-    st.markdown("## 📏 The Numbers - What Do They Mean?")
+    st.markdown("## The numbers: what do they mean?")
     st.caption("Think of the model as a detector that reads each customer's profile and raises a flag if it thinks they're about to leave.")
 
     metrics = [
@@ -570,7 +552,7 @@ def _show_guide():
     st.divider()
 
     # ── Models ────────────────────────────────────────────────────────────────
-    st.markdown("## 🤖 The Models - What Are They?")
+    st.markdown("## The models: what are they?")
     st.caption(
         "Each model is a different mathematical recipe for spotting churners. "
         "The app trains all selected models and automatically picks the best one for your data."
@@ -623,7 +605,7 @@ def _show_guide():
     st.divider()
 
     # ── How the app picks the best model ─────────────────────────────────────
-    st.markdown("## 🏆 How Does the App Pick the Best Model?")
+    st.markdown("## How does the app pick the best model?")
     st.markdown(
         "Every model is scored on customers it did not see while being fitted, using 5-fold predictions on the "
         "training customers. The model with the **highest PR-AUC** wins: the best at ranking real leavers "
@@ -651,7 +633,7 @@ def _date_options(df: pd.DataFrame, target_col: str, id_col):
         return None, None
 
     key = f"{st.session_state.get('_df_hash')}_{target_col}"
-    with st.expander("📅 Dates and testing", expanded=False):
+    with st.expander("Dates and testing", expanded=False, icon=":material/calendar_month:"):
         st.markdown(
             f"Date columns found: **{', '.join(dates)}**. Each one is used as the number of days "
             "before a reference date, such as how long ago a customer last logged in."
@@ -698,11 +680,11 @@ def _show_drift(report):
         st.caption("The columns that moved are listed above the table.")
     elif report.score_psi > WATCH_PSI or not report.columns.empty and report.columns["PSI"].max() > WATCH_PSI:
         st.info(
-            f"🟡 Some change since training (score shift {report.score_psi:.2f}). "
+            f"Some change since training (score shift {report.score_psi:.2f}). "
             "Nothing that requires retraining yet, but keep an eye on the columns marked below."
         )
     else:
-        st.success(f"✅ These customers look like the training customers (score shift {report.score_psi:.2f}).")
+        st.success(f"These customers look like the training customers (score shift {report.score_psi:.2f}).")
     st.caption(
         f"PSI compares how this file's values spread across the training ranges. Below {WATCH_PSI} is "
         f"stable, above {SHIFT_PSI} is a real shift."
@@ -758,7 +740,7 @@ def _outcomes_section(model, prefix: str = ""):
             "Date the customers were scored", value=latest.date(), key=f"{prefix}outcome_as_of",
             help="Days are counted back from this date, as they were when the customers were scored."))
 
-    if not st.button("📊 Check The Model", key=f"{prefix}check_outcomes"):
+    if not st.button("Check the model", key=f"{prefix}check_outcomes", icon=":material/fact_check:"):
         return
     positive = target_labels(df[outcome_col])[labels.index(left_label)]
     try:
@@ -786,19 +768,19 @@ def _outcomes_section(model, prefix: str = ""):
 
     if report.ranking_worse:
         st.warning(
-            f"🔁 **Retrain the model.** It separates leavers from stayers less well than when it was "
+            f"**Retrain the model.** It separates leavers from stayers less well than when it was "
             f"trained (ROC-AUC {now['roc_auc']:.3f} against {then['roc_auc']:.3f}, a drop of more than "
             f"{RANKING_DROP}). What drives churn has probably changed."
         )
     elif report.level_off:
         st.warning(
-            f"🔁 **Retrain the model.** It still ranks customers well, but it expected "
+            f"**Retrain the model.** It still ranks customers well, but it expected "
             f"{report.mean_predicted:.1%} to leave and {report.actual_rate:.1%} did. The churn rate has "
             f"moved by more than {LEVEL_GAP:.0%}, so the probabilities and the money estimates are off."
         )
     else:
         st.success(
-            f"✅ **The model is holding up.** On {report.n_customers:,} customers whose outcome is known "
+            f"**The model is holding up.** On {report.n_customers:,} customers whose outcome is known "
             f"it ranks as well as when it was trained, and its probabilities match what happened."
         )
 
@@ -856,7 +838,7 @@ def _economics_inputs(prefix: str, df_new: pd.DataFrame | None = None):
     from src.business import Economics
     from src.pipeline_builder import detect_decimal, is_text_column, parse_numeric_column
 
-    st.markdown("##### 💰 Campaign economics")
+    st.markdown("##### Campaign economics")
     st.caption("Use your own currency. Rough numbers are fine; the result shows how much they matter.")
     e1, e2, e3 = st.columns(3)
     value = e1.number_input(
@@ -917,7 +899,7 @@ def _save_model_section(run):
             st.rerun()
     else:
         st.download_button(
-            "⬇️ Download Model File",
+            "Download model file", icon=":material/download:",
             data=st.session_state.model_file,
             file_name=f"churn_model_{run.best_model_name.lower().replace(' ', '_')}.churnmodel",
             mime="application/octet-stream",
@@ -930,7 +912,7 @@ def _saved_model_tab():
     from src.errors import ChurnAppError
     from src.model_store import load_model, signing_key
 
-    st.markdown("## 💾 Use a Saved Model")
+    st.markdown("## Use a saved model")
     st.markdown("Upload a model file saved from this app to score new customers without training again.")
     key = signing_key()
     if key is None:
@@ -956,7 +938,7 @@ def _saved_model_tab():
         return
 
     holdout = saved.holdout
-    st.success(f"✅ Loaded **{saved.model_name}**, trained {saved.trained_at[:10]} on {saved.n_train:,} customers")
+    st.success(f"Loaded **{saved.model_name}**, trained {saved.trained_at[:10]} on {saved.n_train:,} customers")
     _then = f"Measured on {saved.n_holdout:,} unseen customers when it was trained."
     k1, k2, k3 = st.columns(3)
     if "quality_score" in holdout:
@@ -972,13 +954,13 @@ def _saved_model_tab():
         "These numbers are from when the model was trained. Customers change over time, "
         "so retrain regularly on recent history."
     )
-    with st.expander("🧭 What drives churn", expanded=False):
+    with st.expander("What drives churn", expanded=False, icon=":material/explore:"):
         _show_drivers(getattr(saved, "drivers", None))
     st.divider()
-    _sec("🔮", "Predict New Customers")
+    _sec("online_prediction", "Predict new customers")
     _predict_section(saved, prefix="saved_")
     st.divider()
-    with st.expander("📊 Check past predictions against what happened", expanded=False):
+    with st.expander("Check past predictions against what happened", expanded=False, icon=":material/fact_check:"):
         _outcomes_section(saved, prefix="saved_")
 
 
@@ -1056,12 +1038,12 @@ def _flagging_inputs(model, df_new, prefix, thr_curve):
 
         with hint_col:
             if abs(selected_thr - auto_thr) <= 0.02:
-                st.info("💰 **Recommended setting** — the most profitable cut for your numbers." if by_profit else
-                        "⚖️ **Recommended setting** — the best balance between catching churners and avoiding false alarms.")
+                st.info("**Recommended setting** — the most profitable cut for your numbers." if by_profit else
+                        "**Recommended setting** — the best balance between catching churners and avoiding false alarms.")
             elif selected_thr < auto_thr:
-                st.info("🔍 **More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
+                st.info("**More sensitive than recommended** — catches more churners, but flags more loyal customers too.")
             else:
-                st.info("🎯 **Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
+                st.info("**Stricter than recommended** — fewer false alarms, but more real churners will be missed.")
 
         estimate = campaign_estimate(thr_curve, model.holdout["actual_rate"], economics)
         at_threshold = estimate.iloc[(estimate["threshold"] - selected_thr).abs().argsort()[:1]].iloc[0]
@@ -1130,16 +1112,16 @@ def _predict_section(model, prefix: str = ""):
 
     df_new = state[df_name]
     report = state[report_name]
-    st.success(f"✅ Loaded **{len(df_new):,}** new customers")
+    st.success(f"Loaded **{len(df_new):,}** new customers")
 
     as_of = None
     if artifact.schema.has_dates:
         if artifact.schema.as_of_column:
-            st.caption(f"📅 Days are counted back from each row's **{artifact.schema.as_of_column}**.")
+            st.caption(f"Days are counted back from each row's **{artifact.schema.as_of_column}**.")
         else:
             latest = artifact.schema.latest_date(df_new) or pd.Timestamp.today().normalize()
             as_of = pd.Timestamp(st.date_input(
-                "📅 Count days back from", value=latest.date(), key=f"{prefix}as_of_{state[file_key_name]}",
+                "Count days back from", value=latest.date(), key=f"{prefix}as_of_{state[file_key_name]}",
                 help="The date this file describes, usually the day it was exported. "
                      "It starts at the latest date in the file.",
             ))
@@ -1159,7 +1141,7 @@ def _predict_section(model, prefix: str = ""):
     from src.business import risk_levels
 
     thr_curve = model.holdout["threshold_curve"]
-    flagging = st.expander("🎚️ Who gets flagged, and the money (optional)", expanded=False)
+    flagging = st.expander("Who gets flagged, and the money (optional)", expanded=False, icon=":material/tune:")
     flagging.caption("By default the model flags the customers at the best balance between catching leavers "
                      "and avoiding false alarms. Change it here, or enter your numbers to see the money.")
     with flagging:
@@ -1169,7 +1151,8 @@ def _predict_section(model, prefix: str = ""):
     per_customer_value = by_profit and values is not None
 
     # ── Predict button ────────────────────────────────────────────────────────
-    if st.button("🔮 Predict Churn", type="primary", key=f"{prefix}predict_btn", disabled=not allow_missing):
+    if st.button("Predict churn", type="primary", key=f"{prefix}predict_btn", disabled=not allow_missing,
+                 icon=":material/online_prediction:"):
         with st.spinner("Scoring customers and working out the reasons…"):
             try:
                 probabilities = artifact.predict_proba(df_new, allow_missing=True, as_of=as_of)
@@ -1214,7 +1197,7 @@ def _predict_section(model, prefix: str = ""):
     _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains if by_profit else None,
                          state[reasons_name], prefix)
 
-    with st.expander("💰 Expected campaign result", expanded=False):
+    with st.expander("Expected campaign result", expanded=False, icon=":material/payments:"):
         _show_campaign(raw_probs, flagged_mask, economics, values)
     _show_changes(raw_probs, model, state.get(drift_name))
 
@@ -1250,19 +1233,19 @@ def _show_changes(raw_probs, model, drift):
     drift_off = drift is not None and not drift.too_few and drift.retrain_recommended
     if risk_off:
         st.warning(
-            f"⚠️ This file's average predicted risk ({expected:.1%}) is {abs(diff_pp):.1f} points away "
+            f"This file's average predicted risk ({expected:.1%}) is {abs(diff_pp):.1f} points away "
             f"from the historical churn rate ({historic:.1%}). These customers may really be riskier or "
             "safer, or they may differ from the customers the model learned from."
         )
     if drift_off:
         moved = ", ".join(f"**{c}**" for c in drift.shifted) or "none of the single columns"
         st.warning(
-            f"🔁 **These customers differ clearly from the training data** (score shift "
+            f"**These customers differ clearly from the training data** (score shift "
             f"{drift.score_psi:.2f}; columns that moved: {moved}). If this file is a segment you chose, "
             "such as one region, that is expected and the model still applies. If it is your whole "
             "customer base, the customers have changed: **train the model again on recent history**."
         )
-    with st.expander("📈 Has the data changed since training?", expanded=False):
+    with st.expander("Has the data changed since training?", expanded=False, icon=":material/monitoring:"):
         _show_change_details(raw_probs, model, drift, expected, historic, diff_pp, risk_off)
 
 
@@ -1281,7 +1264,7 @@ def _show_change_details(raw_probs, model, drift, expected, historic, diff_pp, r
         st.info(f"{total} customers are too few to compare with the historical churn rate.")
     elif not risk_off:
         st.success(
-            f"✅ This file's average predicted risk ({expected:.1%}) is in line with the historical "
+            f"This file's average predicted risk ({expected:.1%}) is in line with the historical "
             f"churn rate ({historic:.1%})."
         )
     _show_drift(drift)
@@ -1319,7 +1302,7 @@ def _show_customer_table(df_new, raw_probs, levels, flagged_mask, values, gains,
     st.dataframe(display_df, width="stretch", hide_index=True)
 
     st.download_button(
-        "⬇️ Download Predictions CSV",
+        "Download predictions (CSV)", icon=":material/download:",
         data=to_csv_bytes(display_df),
         file_name="churn_predictions.csv",
         mime="text/csv",
@@ -1338,11 +1321,12 @@ for _k in ["df", "run", "training_done"]:
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN UI
 # ══════════════════════════════════════════════════════════════════════════════
-st.title("📊 Churn Analytics Studio")
-st.caption("AI & Machine Learning Powered Customer Churn Prediction Platform")
+st.title("Churn Analytics Studio")
+st.caption("Predict which customers will leave, and why.")
 st.divider()
 
-_tab_pipeline, _tab_saved, _tab_guide = st.tabs(["🚀 Pipeline", "💾 Saved Model", "📖 How It Works"])
+_tab_pipeline, _tab_saved, _tab_guide = st.tabs([":material/model_training: Train & Predict", ":material/folder_open: Saved Model",
+                                                    ":material/menu_book: How It Works"])
 
 with _tab_guide:
     _show_guide()
@@ -1352,7 +1336,7 @@ with _tab_saved:
 
 with _tab_pipeline:
     # ── Step 1: Upload ────────────────────────────────────────────────────────
-    _sec("📂", "Step 1 - Upload Training Dataset")
+    _sec("upload_file", "1 · Upload your customer history")
 
     up_col, hint_col = st.columns([2, 1])
     with up_col:
@@ -1396,7 +1380,7 @@ with _tab_pipeline:
                 _bio = _io.BytesIO(_file_bytes)
                 _bio.name = hist_file.name
                 _df = load_uploaded_file(_bio)
-                _prog.progress(10, text="Done ✅")
+                _prog.progress(10, text="Done")
                 st.session_state.run = None
                 st.session_state.training_done = None
                 _forget_job()
@@ -1428,17 +1412,17 @@ with _tab_pipeline:
             )
             _show_trained_sections()
             st.stop()
-        st.info("👆 Upload a dataset to begin.")
+        st.info("Upload a file of past customers with a churn column to begin.")
         st.stop()
 
-    st.success(f"✅ Loaded **{len(df):,} rows × {df.shape[1]} columns**")
-    with st.expander("Preview first rows", expanded=False):
+    st.success(f"Loaded **{len(df):,} rows × {df.shape[1]} columns**")
+    with st.expander("Preview first rows", expanded=False, icon=":material/table_view:"):
         st.dataframe(df.head(5), width="stretch")
 
     st.divider()
 
     # ── Step 2: Column Detection ──────────────────────────────────────────────
-    _sec("🔍", "Step 2 - Column Detection")
+    _sec("fact_check", "2 · Check the columns")
 
     from src.profiler import detect_id_column, detect_target_column
 
@@ -1461,7 +1445,7 @@ with _tab_pipeline:
         _first_guess = auto_target or next(
             (c for c in cols_list if c != auto_id and df[c].nunique() == 2), cols_list[0])
         target_col = st.selectbox(
-            "Churn / Target column ★",
+            "Churn column",
             options=cols_list,
             index=cols_list.index(_first_guess),
         )
@@ -1517,7 +1501,7 @@ with _tab_pipeline:
     from src.config import RECOMMENDED_MIN_CUSTOMERS
     if len(_y_preview) < RECOMMENDED_MIN_CUSTOMERS:
         st.warning(
-            f"⚠️ **{len(_y_preview):,} customers is a small sample.** Below {RECOMMENDED_MIN_CUSTOMERS:,} the "
+            f"**{len(_y_preview):,} customers is a small sample.** Below {RECOMMENDED_MIN_CUSTOMERS:,} the "
             "results move a lot from one sample to the next (Microsoft's churn model requires at least "
             f"{RECOMMENDED_MIN_CUSTOMERS:,}). The model will still train, so treat it as a first look."
         )
@@ -1537,7 +1521,7 @@ with _tab_pipeline:
     exclude_cols = []
     if _findings:
         st.warning(
-            "⚠️ **Possible data leaks.** A column that is only known after a customer leaves makes a model "
+            "**Possible data leaks.** A column that is only known after a customer leaves makes a model "
             "look excellent in testing and useless in real life. These columns are left out unless you "
             "know they are available before the customer leaves:\n\n"
             + "\n".join(f"- **{f.column}**: {f.reason}" for f in _findings)
@@ -1555,14 +1539,14 @@ with _tab_pipeline:
 
     # ── Steps 3–11: Run Pipeline ──────────────────────────────────────────────
     from src.config import PRODUCTION_MODELS
-    _sec("🚀", "Step 3 - Train The Model")
+    _sec("model_training", "3 · Train the model")
 
     from src.config import SEARCH_PRESETS, DEFAULT_SEARCH_DEPTH
 
     model_col, btn_col = st.columns([3, 1])
     with model_col:
         st.markdown("All five models are trained and the best one is kept. The defaults suit most files.")
-        with st.expander("⚙️ Training options", expanded=False):
+        with st.expander("Training options", expanded=False, icon=":material/settings:"):
             all_option   = "All Models"
             model_choices = [all_option] + PRODUCTION_MODELS
             sel_col, depth_col = st.columns([3, 1])
@@ -1618,13 +1602,13 @@ with _tab_pipeline:
                 "| **XGBoost** | Medium-to-large datasets with many features; strong on tabular data with feature interactions | Needs more tuning; sensitive to imbalanced data without proper class weights |\n"
                 "| **LightGBM** | Large datasets (>50K rows); fastest training time of the boosting models | May overfit on small datasets (<1K rows) |\n"
                 "| **CatBoost** | Dataset contains many categorical features (e.g. product category, region, plan type); handles them natively without encoding | Slowest to train; less benefit if data is mostly numeric |\n"
-                "\n💡 **Not sure?** Leave 'All Models' selected - the app will train all five and automatically pick the best one."
+                "\n**Not sure?** Leave 'All Models' selected - the app will train all five and automatically pick the best one."
             )
         as_of, split_by = _date_options(df, target_col, id_col)
     with btn_col:
-        run = st.button("🚀 Run Pipeline", type="primary", width="stretch")
+        run = st.button("Train the model", type="primary", width="stretch", icon=":material/play_arrow:")
         _eta_low, _eta_high = _estimate_runtime(df, selected_models, budget)
-        st.caption(f"⏱️ Est. runtime: **{_eta_low} - {_eta_high}**")
+        st.caption(f"Estimated time: **{_eta_low} - {_eta_high}**")
 
     if run:
         st.session_state.run = None
